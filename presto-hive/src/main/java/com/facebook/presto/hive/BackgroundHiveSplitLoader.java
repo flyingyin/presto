@@ -14,10 +14,13 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.hive.util.HiveFileIterator;
+import com.facebook.presto.hive.util.ResumableTask;
+import com.facebook.presto.hive.util.ResumableTasks;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.TupleDomain;
-import com.google.common.base.Throwables;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.StandardErrorCode;
+import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import org.apache.hadoop.conf.Configuration;
@@ -39,23 +42,22 @@ import org.apache.hadoop.mapred.JobConf;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static com.facebook.presto.hadoop.HadoopFileStatus.isDirectory;
-import static com.facebook.presto.hadoop.HadoopFileStatus.isFile;
 import static com.facebook.presto.hive.HiveBucketing.HiveBucket;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
-import static com.facebook.presto.hive.HiveType.getSupportedHiveType;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
 import static com.facebook.presto.hive.HiveUtil.checkCondition;
 import static com.facebook.presto.hive.HiveUtil.getInputFormat;
 import static com.facebook.presto.hive.HiveUtil.isSplittable;
@@ -65,8 +67,11 @@ import static com.google.common.base.Preconditions.checkState;
 public class BackgroundHiveSplitLoader
         implements HiveSplitLoader
 {
+    public static final CompletableFuture<?> COMPLETED_FUTURE = CompletableFuture.completedFuture(null);
+
     private final String connectorId;
     private final Table table;
+    private final Optional<HiveBucketHandle> bucketHandle;
     private final Optional<HiveBucket> bucket;
     private final HdfsEnvironment hdfsEnvironment;
     private final NamenodeStats namenodeStats;
@@ -75,13 +80,24 @@ public class BackgroundHiveSplitLoader
     private final int maxPartitionBatchSize;
     private final DataSize maxInitialSplitSize;
     private final boolean recursiveDirWalkerEnabled;
-    private final boolean forceLocalScheduling;
     private final Executor executor;
     private final ConnectorSession session;
-    private final AtomicInteger outstandingTasks = new AtomicInteger();
     private final ConcurrentLazyQueue<HivePartitionMetadata> partitions;
     private final Deque<HiveFileIterator> fileIterators = new ConcurrentLinkedDeque<>();
     private final AtomicInteger remainingInitialSplits;
+
+    // Purpose of this lock:
+    // * When write lock is acquired, except the holder, no one can do any of the following:
+    // ** poll from partitions
+    // ** poll from or push to fileIterators
+    // ** push to hiveSplitSource
+    // * When any of the above three operations is carried out, either a read lock or a write lock must be held.
+    // * When a series of operations involving two or more of the above three operations are carried out, the lock
+    //   must be continuously held throughout the series of operations.
+    // Implications:
+    // * if you hold a read lock but not a write lock, you can do any of the above three operations, but you may
+    //   see a series of operations involving two or more of the operations carried out half way.
+    private final ReentrantReadWriteLock taskExecutionLock = new ReentrantReadWriteLock();
 
     private HiveSplitSource hiveSplitSource;
     private volatile boolean stopped;
@@ -90,6 +106,7 @@ public class BackgroundHiveSplitLoader
             String connectorId,
             Table table,
             Iterable<HivePartitionMetadata> partitions,
+            Optional<HiveBucketHandle> bucketHandle,
             Optional<HiveBucket> bucket,
             DataSize maxSplitSize,
             ConnectorSession session,
@@ -100,11 +117,11 @@ public class BackgroundHiveSplitLoader
             int maxPartitionBatchSize,
             DataSize maxInitialSplitSize,
             int maxInitialSplits,
-            boolean forceLocalScheduling,
             boolean recursiveDirWalkerEnabled)
     {
         this.connectorId = connectorId;
         this.table = table;
+        this.bucketHandle = bucketHandle;
         this.bucket = bucket;
         this.maxSplitSize = maxSplitSize;
         this.maxPartitionBatchSize = maxPartitionBatchSize;
@@ -115,7 +132,6 @@ public class BackgroundHiveSplitLoader
         this.maxInitialSplitSize = maxInitialSplitSize;
         this.remainingInitialSplits = new AtomicInteger(maxInitialSplits);
         this.recursiveDirWalkerEnabled = recursiveDirWalkerEnabled;
-        this.forceLocalScheduling = forceLocalScheduling;
         this.executor = executor;
         this.partitions = new ConcurrentLazyQueue<>(partitions);
     }
@@ -124,14 +140,8 @@ public class BackgroundHiveSplitLoader
     public void start(HiveSplitSource splitSource)
     {
         this.hiveSplitSource = splitSource;
-        startLoadSplits();
-    }
-
-    @Override
-    public void resume()
-    {
-        if (outstandingTasks.get() == 0) {
-            startLoadSplits();
+        for (int i = 0; i < maxPartitionBatchSize; i++) {
+            ResumableTasks.submit(executor, new HiveSplitLoaderTask());
         }
     }
 
@@ -141,49 +151,66 @@ public class BackgroundHiveSplitLoader
         stopped = true;
     }
 
-    private void startLoadSplits()
+    private class HiveSplitLoaderTask
+            implements ResumableTask
     {
-        if (stopped || (fileIterators.isEmpty() && partitions.isEmpty())) {
-            return;
-        }
-        if (outstandingTasks.incrementAndGet() > maxPartitionBatchSize) {
-            outstandingTasks.decrementAndGet();
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                loadSplits();
-                if (outstandingTasks.decrementAndGet() == 0) {
-                    if (fileIterators.isEmpty() && partitions.isEmpty()) {
-                        hiveSplitSource.finished();
-                        return;
+        @Override
+        public TaskStatus process()
+        {
+            while (true) {
+                if (stopped) {
+                    return TaskStatus.finished();
+                }
+                try {
+                    CompletableFuture<?> future;
+                    taskExecutionLock.readLock().lock();
+                    try {
+                        future = loadSplits();
+                    }
+                    finally {
+                        taskExecutionLock.readLock().unlock();
+                    }
+                    invokeFinishedIfNecessary();
+                    if (!future.isDone()) {
+                        return TaskStatus.continueOn(future);
                     }
                 }
-                if (!hiveSplitSource.isQueueFull()) {
-                    // Start another task to replace this one
-                    startLoadSplits();
-                    // Ramp up if we're below the limit and the queue still isn't filled
-                    if (outstandingTasks.get() < maxPartitionBatchSize) {
-                        startLoadSplits();
-                    }
+                catch (Exception e) {
+                    hiveSplitSource.fail(e);
                 }
             }
-            catch (Exception e) {
-                hiveSplitSource.fail(e);
-            }
-        });
+        }
     }
 
-    private void loadSplits()
+    private void invokeFinishedIfNecessary()
+    {
+        if (partitions.isEmpty() && fileIterators.isEmpty()) {
+            taskExecutionLock.writeLock().lock();
+            try {
+                // the write lock guarantees that no one is operating on the partitions, fileIterators, or hiveSplitSource, or half way through doing so.
+                if (partitions.isEmpty() && fileIterators.isEmpty()) {
+                    // It is legal to call `finished` multiple times or after `stop` was called.
+                    // Nothing bad will happen if `finished` implementation calls methods that will try to obtain a read lock because the lock is re-entrant.
+                    hiveSplitSource.finished();
+                }
+            }
+            finally {
+                taskExecutionLock.writeLock().unlock();
+            }
+        }
+    }
+
+    private CompletableFuture<?> loadSplits()
             throws IOException
     {
         HiveFileIterator files = fileIterators.poll();
         if (files == null) {
             HivePartitionMetadata partition = partitions.poll();
-            if (partition != null) {
-                loadPartition(partition);
+            if (partition == null) {
+                return COMPLETED_FUTURE;
             }
-            return;
+            loadPartition(partition);
+            return COMPLETED_FUTURE;
         }
 
         while (files.hasNext() && !stopped) {
@@ -206,7 +233,7 @@ public class BackgroundHiveSplitLoader
             else {
                 boolean splittable = isSplittable(files.getInputFormat(), hdfsEnvironment.getFileSystem(file.getPath()), file.getPath());
 
-                hiveSplitSource.addToQueue(createHiveSplits(
+                CompletableFuture<?> future = hiveSplitSource.addToQueue(createHiveSplits(
                         files.getPartitionName(),
                         file.getPath().toString(),
                         file.getBlockLocations(),
@@ -216,15 +243,17 @@ public class BackgroundHiveSplitLoader
                         files.getPartitionKeys(),
                         splittable,
                         session,
+                        OptionalInt.empty(),
                         files.getEffectivePredicate()));
-                if (hiveSplitSource.isQueueFull()) {
+                if (!future.isDone()) {
                     fileIterators.addFirst(files);
-                    return;
+                    return future;
                 }
             }
         }
 
         // No need to put the iterator back, since it's either empty or we've stopped
+        return COMPLETED_FUTURE;
     }
 
     private void loadPartition(HivePartitionMetadata partition)
@@ -240,6 +269,9 @@ public class BackgroundHiveSplitLoader
         InputFormat<?, ?> inputFormat = getInputFormat(configuration, schema, false);
 
         if (inputFormat instanceof SymlinkTextInputFormat) {
+            if (bucketHandle.isPresent()) {
+                throw new PrestoException(StandardErrorCode.NOT_SUPPORTED, "Bucketed table in SymlinkTextInputFormat is not yet supported");
+            }
             JobConf jobConf = new JobConf(configuration);
             FileInputFormat.setInputPaths(jobConf, path);
             InputSplit[] splits = inputFormat.getSplits(jobConf, 0);
@@ -261,6 +293,7 @@ public class BackgroundHiveSplitLoader
                         partitionKeys,
                         false,
                         session,
+                        OptionalInt.empty(),
                         effectivePredicate));
                 if (stopped) {
                     return;
@@ -269,67 +302,83 @@ public class BackgroundHiveSplitLoader
             return;
         }
 
+        // If only one bucket could match: load that one file
         FileSystem fs = hdfsEnvironment.getFileSystem(path);
+        HiveFileIterator iterator = new HiveFileIterator(path, fs, directoryLister, namenodeStats, partitionName, inputFormat, schema, partitionKeys, effectivePredicate);
         if (bucket.isPresent()) {
-            Optional<FileStatus> bucketFile = getBucketFile(bucket.get(), fs, path);
-            if (bucketFile.isPresent()) {
-                FileStatus file = bucketFile.get();
-                BlockLocation[] blockLocations = fs.getFileBlockLocations(file, 0, file.getLen());
-                boolean splittable = isSplittable(inputFormat, fs, file.getPath());
+            List<LocatedFileStatus> locatedFileStatuses = listAndSortBucketFiles(iterator, bucket.get().getBucketCount());
+            FileStatus file = locatedFileStatuses.get(bucket.get().getBucketNumber());
+            BlockLocation[] blockLocations = fs.getFileBlockLocations(file, 0, file.getLen());
+            boolean splittable = isSplittable(inputFormat, fs, file.getPath());
 
-                hiveSplitSource.addToQueue(createHiveSplits(
-                        partitionName,
-                        file.getPath().toString(),
-                        blockLocations,
-                        0,
-                        file.getLen(),
-                        schema,
-                        partitionKeys,
-                        splittable,
-                        session,
-                        effectivePredicate));
-                return;
-            }
+            hiveSplitSource.addToQueue(createHiveSplits(
+                    partitionName,
+                    file.getPath().toString(),
+                    blockLocations,
+                    0,
+                    file.getLen(),
+                    schema,
+                    partitionKeys,
+                    splittable,
+                    session,
+                    OptionalInt.of(bucket.get().getBucketNumber()),
+                    effectivePredicate));
+            return;
         }
 
-        HiveFileIterator iterator = new HiveFileIterator(path, fs, directoryLister, namenodeStats, partitionName, inputFormat, schema, partitionKeys, effectivePredicate);
+        // If table is bucketed: list the directory, sort, tag with bucket id
+        if (bucketHandle.isPresent()) {
+            // HiveFileIterator skips hidden files automatically.
+            int bucketCount = bucketHandle.get().getBucketCount();
+            List<LocatedFileStatus> list = listAndSortBucketFiles(iterator, bucketCount);
+
+            for (int bucketIndex = 0; bucketIndex < bucketCount; bucketIndex++) {
+                LocatedFileStatus file = list.get(bucketIndex);
+                boolean splittable = isSplittable(iterator.getInputFormat(), hdfsEnvironment.getFileSystem(file.getPath()), file.getPath());
+
+                hiveSplitSource.addToQueue(createHiveSplits(
+                        iterator.getPartitionName(),
+                        file.getPath().toString(),
+                        file.getBlockLocations(),
+                        0,
+                        file.getLen(),
+                        iterator.getSchema(),
+                        iterator.getPartitionKeys(),
+                        splittable,
+                        session,
+                        OptionalInt.of(bucketIndex),
+                        iterator.getEffectivePredicate()));
+            }
+
+            return;
+        }
+
         fileIterators.addLast(iterator);
     }
 
-    private static Optional<FileStatus> getBucketFile(HiveBucket bucket, FileSystem fs, Path path)
+    private static List<LocatedFileStatus> listAndSortBucketFiles(HiveFileIterator hiveFileIterator, int bucketCount)
     {
-        FileStatus[] statuses = listStatus(fs, path);
+        ArrayList<LocatedFileStatus> list = new ArrayList<>(bucketCount);
 
-        if (statuses.length != bucket.getBucketCount()) {
-            return Optional.empty();
-        }
-
-        Map<String, FileStatus> map = new HashMap<>();
-        List<String> paths = new ArrayList<>();
-        for (FileStatus status : statuses) {
-            if (!isFile(status)) {
-                return Optional.empty();
+        while (hiveFileIterator.hasNext()) {
+            LocatedFileStatus next = hiveFileIterator.next();
+            if (isDirectory(next)) {
+                // Fail here to be on the safe side. This seems to be the same as what Hive does
+                throw new PrestoException(HIVE_PARTITION_SCHEMA_MISMATCH, "Found sub-directory in bucket directory");
             }
-            String pathString = status.getPath().toString();
-            map.put(pathString, status);
-            paths.add(pathString);
+            if (list.size() >= bucketCount) {
+                throw new PrestoException(HIVE_PARTITION_SCHEMA_MISMATCH, "There are more files in the directory than the specified bucket count: " + bucketCount);
+            }
+            list.add(next);
         }
 
-        // Hive sorts the paths as strings lexicographically
-        Collections.sort(paths);
-
-        String pathString = paths.get(bucket.getBucketNumber());
-        return Optional.of(map.get(pathString));
-    }
-
-    private static FileStatus[] listStatus(FileSystem fs, Path path)
-    {
-        try {
-            return fs.listStatus(path);
+        if (list.size() != bucketCount) {
+            throw new PrestoException(HIVE_PARTITION_SCHEMA_MISMATCH, "There are less files in the directory than the specified bucket count: " + bucketCount);
         }
-        catch (IOException e) {
-            throw Throwables.propagate(e);
-        }
+
+        // Sort FileStatus objects (instead of, e.g., fileStatus.getPath().toString). This matches org.apache.hadoop.hive.ql.metadata.Table.getSortedPaths
+        list.sort(null);
+        return list;
     }
 
     private List<HiveSplit> createHiveSplits(
@@ -342,12 +391,13 @@ public class BackgroundHiveSplitLoader
             List<HivePartitionKey> partitionKeys,
             boolean splittable,
             ConnectorSession session,
+            OptionalInt bucketNumber,
             TupleDomain<HiveColumnHandle> effectivePredicate)
             throws IOException
     {
         ImmutableList.Builder<HiveSplit> builder = ImmutableList.builder();
 
-        boolean forceLocalScheduling = HiveSessionProperties.getForceLocalScheduling(session, this.forceLocalScheduling);
+        boolean forceLocalScheduling = HiveSessionProperties.isForceLocalScheduling(session);
 
         if (splittable) {
             for (BlockLocation blockLocation : blockLocations) {
@@ -355,9 +405,11 @@ public class BackgroundHiveSplitLoader
                 List<HostAddress> addresses = toHostAddress(blockLocation.getHosts());
 
                 long maxBytes = maxSplitSize.toBytes();
+                boolean creatingInitialSplits = false;
 
                 if (remainingInitialSplits.get() > 0) {
                     maxBytes = maxInitialSplitSize.toBytes();
+                    creatingInitialSplits = true;
                 }
 
                 // divide the block into uniform chunks that are smaller than the max split size
@@ -367,6 +419,14 @@ public class BackgroundHiveSplitLoader
 
                 long chunkOffset = 0;
                 while (chunkOffset < blockLocation.getLength()) {
+                    if (remainingInitialSplits.decrementAndGet() < 0 && creatingInitialSplits) {
+                        creatingInitialSplits = false;
+                        // recalculate the target chunk size
+                        maxBytes = maxSplitSize.toBytes();
+                        long remainingLength = blockLocation.getLength() - chunkOffset;
+                        chunks = Math.max(1, (int) (remainingLength / maxBytes));
+                        targetChunkSize = (long) Math.ceil(remainingLength * 1.0 / chunks);
+                    }
                     // adjust the actual chunk size to account for the overrun when chunks are slightly bigger than necessary (see above)
                     long chunkLength = Math.min(targetChunkSize, blockLocation.getLength() - chunkOffset);
 
@@ -380,12 +440,11 @@ public class BackgroundHiveSplitLoader
                             schema,
                             partitionKeys,
                             addresses,
+                            bucketNumber,
                             forceLocalScheduling,
-                            session,
                             effectivePredicate));
 
                     chunkOffset += chunkLength;
-                    remainingInitialSplits.decrementAndGet();
                 }
                 checkState(chunkOffset == blockLocation.getLength(), "Error splitting blocks");
             }
@@ -407,8 +466,8 @@ public class BackgroundHiveSplitLoader
                     schema,
                     partitionKeys,
                     addresses,
+                    bucketNumber,
                     forceLocalScheduling,
-                    session,
                     effectivePredicate));
         }
         return builder.build();
@@ -434,7 +493,7 @@ public class BackgroundHiveSplitLoader
         checkCondition(keys.size() == values.size(), HIVE_INVALID_METADATA, "Expected %s partition key values, but got %s", keys.size(), values.size());
         for (int i = 0; i < keys.size(); i++) {
             String name = keys.get(i).getName();
-            HiveType hiveType = getSupportedHiveType(keys.get(i).getType());
+            HiveType hiveType = HiveType.valueOf(keys.get(i).getType());
             String value = values.get(i);
             checkCondition(value != null, HIVE_INVALID_PARTITION_VALUE, "partition key value cannot be null for field: %s", name);
             partitionKeys.add(new HivePartitionKey(name, hiveType, value));

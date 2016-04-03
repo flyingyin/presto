@@ -21,6 +21,7 @@ import org.ietf.jgss.GSSContext;
 import org.ietf.jgss.GSSCredential;
 import org.ietf.jgss.GSSException;
 import org.ietf.jgss.GSSManager;
+import org.ietf.jgss.GSSName;
 import org.ietf.jgss.Oid;
 
 import javax.annotation.PreDestroy;
@@ -66,7 +67,6 @@ public class SpnegoFilter
     private static final String INCLUDE_REALM_HEADER = "X-Airlift-Realm-In-Challenge";
 
     private final GSSManager gssManager = GSSManager.getInstance();
-    private final String servicePrincipal;
     private final LoginContext loginContext;
     private final GSSCredential serverCredential;
 
@@ -76,7 +76,8 @@ public class SpnegoFilter
         System.setProperty("java.security.krb5.conf", config.getKerberosConfig().getAbsolutePath());
 
         try {
-            servicePrincipal = config.getServiceName() + "/" + InetAddress.getLocalHost().getCanonicalHostName().toLowerCase(Locale.US);
+            String hostname = InetAddress.getLocalHost().getCanonicalHostName().toLowerCase(Locale.US);
+            String servicePrincipal = config.getServiceName() + "/" + hostname;
             loginContext = new LoginContext("", null, null, new Configuration()
             {
                 @Override
@@ -88,7 +89,9 @@ public class SpnegoFilter
                     if (LOG.isDebugEnabled()) {
                         options.put("debug", "true");
                     }
-
+                    if (config.getKeytab() != null) {
+                        options.put("keyTab", config.getKeytab().getAbsolutePath());
+                    }
                     options.put("isInitiator", "false");
                     options.put("useKeyTab", "true");
                     options.put("principal", servicePrincipal);
@@ -100,7 +103,7 @@ public class SpnegoFilter
             loginContext.login();
 
             serverCredential = doAs(loginContext.getSubject(), () -> gssManager.createCredential(
-                    gssManager.createName(servicePrincipal, null),
+                    gssManager.createName(config.getServiceName() + "@" + hostname, GSSName.NT_HOSTBASED_SERVICE),
                     INDEFINITE_LIFETIME,
                     new Oid[] {
                             new Oid("1.2.840.113554.1.2.2"), // kerberos 5
@@ -187,10 +190,11 @@ public class SpnegoFilter
                         Optional.ofNullable(outputToken),
                         new KerberosPrincipal(context.getSrcName().toString())));
             }
+            LOG.debug("Failed to establish GSS context for token %s", token);
         }
         catch (GSSException e) {
             // ignore and fail the authentication
-            LOG.debug(e, "auth failed");
+            LOG.debug(e, "Authentication failed for token %s", token);
         }
         finally {
             try {

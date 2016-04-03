@@ -12,52 +12,54 @@ package com.facebook.presto.operator.scalar;
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import com.facebook.presto.metadata.FunctionInfo;
+
 import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.ParametricOperator;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.metadata.SqlOperator;
+import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Map;
 
-import static com.facebook.presto.metadata.FunctionRegistry.operatorInfo;
 import static com.facebook.presto.metadata.OperatorType.HASH_CODE;
 import static com.facebook.presto.metadata.Signature.comparableTypeParameter;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.metadata.Signature.internalOperator;
+import static com.facebook.presto.operator.scalar.CombineHashFunction.getHash;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.type.ArrayType.ARRAY_NULL_ELEMENT_MSG;
+import static com.facebook.presto.type.TypeUtils.checkElementNotNull;
+import static com.facebook.presto.type.TypeUtils.hashPosition;
 import static com.facebook.presto.util.Reflection.methodHandle;
 
 public class ArrayHashCodeOperator
-        extends ParametricOperator
+        extends SqlOperator
 {
     public static final ArrayHashCodeOperator ARRAY_HASH_CODE = new ArrayHashCodeOperator();
-    private static final TypeSignature RETURN_TYPE = parseTypeSignature(StandardTypes.BIGINT);
-    public static final MethodHandle METHOD_HANDLE = methodHandle(ArrayHashCodeOperator.class, "hash", Type.class, Slice.class);
+    public static final MethodHandle METHOD_HANDLE = methodHandle(ArrayHashCodeOperator.class, "hash", MethodHandle.class, Type.class, Block.class);
 
     private ArrayHashCodeOperator()
     {
-        super(HASH_CODE, ImmutableList.of(comparableTypeParameter("T")), StandardTypes.BIGINT, ImmutableList.of("array<T>"));
+        super(HASH_CODE, ImmutableList.of(comparableTypeParameter("T")), StandardTypes.BIGINT, ImmutableList.of("array(T)"));
     }
 
     @Override
-    public FunctionInfo specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
     {
         Type type = types.get("T");
-        type = typeManager.getParameterizedType(StandardTypes.ARRAY, ImmutableList.of(type.getTypeSignature()), ImmutableList.of());
-        TypeSignature typeSignature = type.getTypeSignature();
-        return operatorInfo(HASH_CODE, RETURN_TYPE, ImmutableList.of(typeSignature), METHOD_HANDLE.bindTo(type), false, ImmutableList.of(false));
+        MethodHandle hashCodeFunction = functionRegistry.getScalarFunctionImplementation(internalOperator(HASH_CODE, BIGINT, ImmutableList.of(type))).getMethodHandle();
+        return new ScalarFunctionImplementation(false, ImmutableList.of(false), METHOD_HANDLE.bindTo(hashCodeFunction).bindTo(type), isDeterministic());
     }
 
-    public static long hash(Type type, Slice slice)
+    public static long hash(MethodHandle hashCodeFunction, Type type, Block block)
     {
-        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), 1, slice.length());
-        blockBuilder.writeBytes(slice, 0, slice.length());
-        return type.hash(blockBuilder.closeEntry().build(), 0);
+        int hash = 0;
+        for (int i = 0; i < block.getPositionCount(); i++) {
+            checkElementNotNull(block.isNull(i), ARRAY_NULL_ELEMENT_MSG);
+            hash = (int) getHash(hash, hashPosition(hashCodeFunction, type, block, i));
+        }
+        return hash;
     }
 }

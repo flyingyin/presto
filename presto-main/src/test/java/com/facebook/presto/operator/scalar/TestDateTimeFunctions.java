@@ -25,7 +25,9 @@ import com.facebook.presto.spi.type.TimeType;
 import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.spi.type.TimestampType;
 import com.facebook.presto.spi.type.Type;
-import org.joda.time.DateMidnight;
+import com.facebook.presto.testing.TestingConnectorSession;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalTime;
@@ -33,10 +35,13 @@ import org.joda.time.ReadableInstant;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Locale;
-import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.presto.operator.scalar.DateTimeFunctions.currentDate;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
@@ -44,8 +49,9 @@ import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
 import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKeyForOffset;
 import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.util.DateTimeZoneIndex.getDateTimeZone;
-import static java.util.Locale.ENGLISH;
+import static java.util.Locale.US;
 import static java.util.Objects.requireNonNull;
 import static org.joda.time.DateTimeUtils.getInstantChronology;
 import static org.joda.time.Days.daysBetween;
@@ -56,6 +62,7 @@ import static org.joda.time.Months.monthsBetween;
 import static org.joda.time.Seconds.secondsBetween;
 import static org.joda.time.Weeks.weeksBetween;
 import static org.joda.time.Years.yearsBetween;
+import static org.testng.Assert.assertEquals;
 
 public class TestDateTimeFunctions
 {
@@ -89,13 +96,8 @@ public class TestDateTimeFunctions
     @BeforeClass
     public void setUp()
     {
-        session = Session.builder()
-                .setUser("user")
-                .setSource("test")
-                .setCatalog("catalog")
-                .setSchema("schema")
+        session = testSessionBuilder()
                 .setTimeZoneKey(TIME_ZONE_KEY)
-                .setLocale(ENGLISH)
                 .build();
         functionAssertions = new FunctionAssertions(session);
     }
@@ -105,9 +107,30 @@ public class TestDateTimeFunctions
             throws Exception
     {
         // current date is the time at midnight in the session time zone
-        DateMidnight dateMidnight = new DateMidnight(session.getStartTime(), DATE_TIME_ZONE);
-        int days = (int) TimeUnit.MILLISECONDS.toDays(dateMidnight.getMillis());
-        assertFunction("CURRENT_DATE", DateType.DATE, new SqlDate(days));
+        assertFunction("CURRENT_DATE", DateType.DATE, new SqlDate((int) epochDaysInZone(TIME_ZONE_KEY, session.getStartTime())));
+    }
+
+    @Test
+    public void testCurrentDateTimezone()
+            throws Exception
+    {
+        TimeZoneKey kievTimeZoneKey = getTimeZoneKey("Europe/Kiev");
+        for (long instant = new DateTime(2000, 6, 15, 0, 0).getMillis(); instant < new DateTime(2016, 6, 15, 0, 0).getMillis(); instant += TimeUnit.HOURS.toMillis(1)) {
+            assertCurrentDateAtInstant(kievTimeZoneKey, instant);
+            assertCurrentDateAtInstant(TIME_ZONE_KEY, instant);
+        }
+    }
+
+    private static void assertCurrentDateAtInstant(TimeZoneKey timeZoneKey, long instant)
+    {
+        long expectedDays = epochDaysInZone(timeZoneKey, instant);
+        long dateTimeCalculation = currentDate(new TestingConnectorSession("test", timeZoneKey, US, instant, ImmutableList.of(), ImmutableMap.of()));
+        assertEquals(dateTimeCalculation, expectedDays);
+    }
+
+    private static long epochDaysInZone(TimeZoneKey timeZoneKey, long instant)
+    {
+        return LocalDate.from(Instant.ofEpochMilli(instant).atZone(ZoneId.of(timeZoneKey.getId()))).toEpochDay();
     }
 
     @Test
@@ -172,6 +195,14 @@ public class TestDateTimeFunctions
     }
 
     @Test
+    public void testDate()
+    {
+        assertFunction("date('" + DATE_ISO8601_STRING + "')", DateType.DATE, toDate(DATE));
+        assertFunction("date(" + WEIRD_TIMESTAMP_LITERAL + ")", DateType.DATE, toDate(DATE));
+        assertFunction("date(" + TIMESTAMP_LITERAL + ")", DateType.DATE, toDate(DATE));
+    }
+
+    @Test
     public void testFromISO8601()
     {
         assertFunction("from_iso8601_timestamp('" + TIMESTAMP_ISO8601_STRING + "')", TIMESTAMP_WITH_TIME_ZONE, toTimestampWithTimeZone(TIMESTAMP_WITH_NUMERICAL_ZONE));
@@ -195,24 +226,6 @@ public class TestDateTimeFunctions
         assertFunction("hour(" + WEIRD_TIMESTAMP_LITERAL + ")", BIGINT, WEIRD_TIMESTAMP.getHourOfDay());
         assertFunction("minute(" + WEIRD_TIMESTAMP_LITERAL + ")", BIGINT, WEIRD_TIMESTAMP.getMinuteOfHour());
         assertFunction("current_timezone()", VARCHAR, TIME_ZONE_KEY.getId());
-    }
-
-    @Test
-    public void testAtTimeZone()
-    {
-        functionAssertions.assertFunction("current_timestamp at time zone interval '07:09' hour to minute",
-                TIMESTAMP_WITH_TIME_ZONE,
-                new SqlTimestampWithTimeZone(session.getStartTime(), WEIRD_TIME_ZONE_KEY));
-
-        functionAssertions.assertFunction("current_timestamp at time zone 'Asia/Oral'",
-                TIMESTAMP_WITH_TIME_ZONE,
-                new SqlTimestampWithTimeZone(session.getStartTime(), TimeZone.getTimeZone("Asia/Oral")));
-        functionAssertions.assertFunction("now() at time zone 'Asia/Oral'",
-                TIMESTAMP_WITH_TIME_ZONE,
-                new SqlTimestampWithTimeZone(session.getStartTime(), TimeZone.getTimeZone("Asia/Oral")));
-        functionAssertions.assertFunction("current_timestamp at time zone '+07:09'",
-                TIMESTAMP_WITH_TIME_ZONE,
-                new SqlTimestampWithTimeZone(session.getStartTime(), WEIRD_TIME_ZONE_KEY));
     }
 
     @Test
@@ -483,6 +496,7 @@ public class TestDateTimeFunctions
     @Test
     public void testAddFieldToTimestamp()
     {
+        assertFunction("date_add('millisecond', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusMillis(3)));
         assertFunction("date_add('second', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusSeconds(3)));
         assertFunction("date_add('minute', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusMinutes(3)));
         assertFunction("date_add('hour', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusHours(3)));
@@ -492,6 +506,7 @@ public class TestDateTimeFunctions
         assertFunction("date_add('quarter', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusMonths(3 * 3)));
         assertFunction("date_add('year', 3, " + TIMESTAMP_LITERAL + ")", TimestampType.TIMESTAMP, toTimestamp(TIMESTAMP.plusYears(3)));
 
+        assertFunction("date_add('millisecond', 3, " + WEIRD_TIMESTAMP_LITERAL + ")", TIMESTAMP_WITH_TIME_ZONE, toTimestampWithTimeZone(WEIRD_TIMESTAMP.plusMillis(3)));
         assertFunction("date_add('second', 3, " + WEIRD_TIMESTAMP_LITERAL + ")", TIMESTAMP_WITH_TIME_ZONE, toTimestampWithTimeZone(WEIRD_TIMESTAMP.plusSeconds(3)));
         assertFunction("date_add('minute', 3, " + WEIRD_TIMESTAMP_LITERAL + ")", TIMESTAMP_WITH_TIME_ZONE, toTimestampWithTimeZone(WEIRD_TIMESTAMP.plusMinutes(3)));
         assertFunction("date_add('hour', 3, " + WEIRD_TIMESTAMP_LITERAL + ")", TIMESTAMP_WITH_TIME_ZONE, toTimestampWithTimeZone(WEIRD_TIMESTAMP.plusHours(3)));
@@ -515,10 +530,12 @@ public class TestDateTimeFunctions
     @Test
     public void testAddFieldToTime()
     {
+        assertFunction("date_add('millisecond', 3, " + TIME_LITERAL + ")", TimeType.TIME, toTime(TIME.plusMillis(3)));
         assertFunction("date_add('second', 3, " + TIME_LITERAL + ")", TimeType.TIME, toTime(TIME.plusSeconds(3)));
         assertFunction("date_add('minute', 3, " + TIME_LITERAL + ")", TimeType.TIME, toTime(TIME.plusMinutes(3)));
         assertFunction("date_add('hour', 3, " + TIME_LITERAL + ")", TimeType.TIME, toTime(TIME.plusHours(3)));
 
+        assertFunction("date_add('millisecond', 3, " + WEIRD_TIME_LITERAL + ")", TIME_WITH_TIME_ZONE, toTimeWithTimeZone(WEIRD_TIME.plusMillis(3)));
         assertFunction("date_add('second', 3, " + WEIRD_TIME_LITERAL + ")", TIME_WITH_TIME_ZONE, toTimeWithTimeZone(WEIRD_TIME.plusSeconds(3)));
         assertFunction("date_add('minute', 3, " + WEIRD_TIME_LITERAL + ")", TIME_WITH_TIME_ZONE, toTimeWithTimeZone(WEIRD_TIME.plusMinutes(3)));
         assertFunction("date_add('hour', 3, " + WEIRD_TIME_LITERAL + ")", TIME_WITH_TIME_ZONE, toTimeWithTimeZone(WEIRD_TIME.plusHours(3)));
@@ -704,6 +721,7 @@ public class TestDateTimeFunctions
         assertFunction("date_format(" + wierdDateTimeLiteral + ", '%x %v')", VARCHAR, "2001 02");
 
         assertFunction("date_format(TIMESTAMP '2001-01-09 13:04:05.32', '%f')", VARCHAR, "320000");
+        assertFunction("date_format(TIMESTAMP '2001-01-09 00:04:05.32', '%k')", VARCHAR, "0");
     }
 
     @Test
@@ -755,17 +773,17 @@ public class TestDateTimeFunctions
         assertFunction("date_parse('1.2006', '%s.%f')",
                 TimestampType.TIMESTAMP,
                 toTimestamp(new DateTime(1970, 1, 1, 0, 0, 1, 200, DATE_TIME_ZONE)));
+
+        assertFunction("date_parse('0', '%k')",
+                TimestampType.TIMESTAMP,
+                toTimestamp(new DateTime(1970, 1, 1, 0, 0, 0, 0, DATE_TIME_ZONE)));
     }
 
     @Test
     public void testLocale()
     {
         Locale locale = Locale.JAPANESE;
-        Session localeSession = Session.builder()
-                .setUser("user")
-                .setSource("test")
-                .setCatalog("catalog")
-                .setSchema("schema")
+        Session localeSession = testSessionBuilder()
                 .setTimeZoneKey(TIME_ZONE_KEY)
                 .setLocale(locale)
                 .build();

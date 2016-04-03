@@ -15,9 +15,12 @@ package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.operator.Description;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.block.BlockBuilderStatus;
 import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.type.LiteralParameters;
 import com.facebook.presto.type.SqlType;
-import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import io.airlift.slice.InvalidCodePointException;
 import io.airlift.slice.InvalidUtf8Exception;
@@ -28,13 +31,10 @@ import io.airlift.slice.Slices;
 import javax.annotation.Nullable;
 
 import java.text.Normalizer;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.OptionalInt;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.type.ArrayType.toStackRepresentation;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static io.airlift.slice.SliceUtf8.countCodePoints;
 import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
@@ -56,7 +56,7 @@ public final class StringFunctions
 
     @Description("convert Unicode code point to a string")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
+    @SqlType("varchar(1)")
     public static Slice chr(@SqlType(StandardTypes.BIGINT) long codepoint)
     {
         try {
@@ -67,37 +67,29 @@ public final class StringFunctions
         }
     }
 
-    @Description("concatenates given strings")
-    @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice concat(@SqlType(StandardTypes.VARCHAR) Slice str1, @SqlType(StandardTypes.VARCHAR) Slice str2)
-    {
-        Slice concat = Slices.allocate(str1.length() + str2.length());
-        concat.setBytes(0, str1);
-        concat.setBytes(str1.length(), str2);
-        return concat;
-    }
-
     @Description("count of code points of the given string")
     @ScalarFunction
+    @LiteralParameters("x")
     @SqlType(StandardTypes.BIGINT)
-    public static long length(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    public static long length(@SqlType("varchar(x)") Slice slice)
     {
         return countCodePoints(slice);
     }
 
     @Description("greedily removes occurrences of a pattern in a string")
     @ScalarFunction
+    @LiteralParameters({"x", "y"})
     @SqlType(StandardTypes.VARCHAR)
-    public static Slice replace(@SqlType(StandardTypes.VARCHAR) Slice str, @SqlType(StandardTypes.VARCHAR) Slice search)
+    public static Slice replace(@SqlType("varchar(x)") Slice str, @SqlType("varchar(y)") Slice search)
     {
         return replace(str, search, Slices.EMPTY_SLICE);
     }
 
     @Description("greedily replaces occurrences of a pattern with a string")
     @ScalarFunction
+    @LiteralParameters({"x", "y"})
     @SqlType(StandardTypes.VARCHAR)
-    public static Slice replace(@SqlType(StandardTypes.VARCHAR) Slice str, @SqlType(StandardTypes.VARCHAR) Slice search, @SqlType(StandardTypes.VARCHAR) Slice replace)
+    public static Slice replace(@SqlType("varchar(x)") Slice str, @SqlType("varchar(y)") Slice search, @SqlType(StandardTypes.VARCHAR) Slice replace)
     {
         // Empty search?
         if (search.length() == 0) {
@@ -161,8 +153,9 @@ public final class StringFunctions
 
     @Description("reverse all code points in a given string")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice reverse(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice reverse(@SqlType("varchar(x)") Slice slice)
     {
         return SliceUtf8.reverse(slice);
     }
@@ -185,8 +178,9 @@ public final class StringFunctions
 
     @Description("suffix starting at given index")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice substr(@SqlType(StandardTypes.VARCHAR) Slice utf8, @SqlType(StandardTypes.BIGINT) long start)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice substr(@SqlType("varchar(x)") Slice utf8, @SqlType(StandardTypes.BIGINT) long start)
     {
         if ((start == 0) || utf8.length() == 0) {
             return Slices.EMPTY_SLICE;
@@ -222,8 +216,9 @@ public final class StringFunctions
 
     @Description("substring of given length starting at an index")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice substr(@SqlType(StandardTypes.VARCHAR) Slice utf8, @SqlType(StandardTypes.BIGINT) long start, @SqlType(StandardTypes.BIGINT) long length)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice substr(@SqlType("varchar(x)") Slice utf8, @SqlType(StandardTypes.BIGINT) long start, @SqlType(StandardTypes.BIGINT) long length)
     {
         if (start == 0 || (length <= 0) || (utf8.length() == 0)) {
             return Slices.EMPTY_SLICE;
@@ -269,26 +264,27 @@ public final class StringFunctions
     }
 
     @ScalarFunction
-    @SqlType("array<varchar>")
-    public static Slice split(@SqlType(StandardTypes.VARCHAR) Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter)
+    @LiteralParameters("x")
+    @SqlType("array(varchar(x))")
+    public static Block split(@SqlType("varchar(x)") Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter)
     {
         return split(string, delimiter, string.length() + 1);
     }
 
     @ScalarFunction
-    @SqlType("array<varchar>")
-    public static Slice split(@SqlType(StandardTypes.VARCHAR) Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter, @SqlType(StandardTypes.BIGINT) long limit)
+    @LiteralParameters("x")
+    @SqlType("array(varchar(x))")
+    public static Block split(@SqlType("varchar(x)") Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter, @SqlType(StandardTypes.BIGINT) long limit)
     {
         checkCondition(limit > 0, INVALID_FUNCTION_ARGUMENT, "Limit must be positive");
         checkCondition(limit <= Integer.MAX_VALUE, INVALID_FUNCTION_ARGUMENT, "Limit is too large");
         checkCondition(delimiter.length() > 0, INVALID_FUNCTION_ARGUMENT, "The delimiter may not be the empty string");
+        BlockBuilder parts = VARCHAR.createBlockBuilder(new BlockBuilderStatus(), 1, string.length());
         // If limit is one, the last and only element is the complete string
         if (limit == 1) {
-            return toStackRepresentation(ImmutableList.of(string), VARCHAR);
+            VARCHAR.writeSlice(parts, string);
+            return parts.build();
         }
-
-        // todo this should write directly into a block
-        List<Slice> parts = new ArrayList<>();
 
         int index = 0;
         while (index < string.length()) {
@@ -298,25 +294,26 @@ public final class StringFunctions
                 break;
             }
             // Add the part from current index to found split
-            parts.add(string.slice(index, splitIndex - index));
+            VARCHAR.writeSlice(parts, string, index, splitIndex - index);
             // Continue searching after delimiter
             index = splitIndex + delimiter.length();
             // Reached limit-1 parts so we can stop
-            if (parts.size() == limit - 1) {
+            if (parts.getPositionCount() == limit - 1) {
                 break;
             }
         }
         // Rest of string
-        parts.add(string.slice(index, string.length() - index));
+        VARCHAR.writeSlice(parts, string, index, string.length() - index);
 
-        return toStackRepresentation(parts, VARCHAR);
+        return parts.build();
     }
 
     @Nullable
     @Description("splits a string by a delimiter and returns the specified field (counting from one)")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice splitPart(@SqlType(StandardTypes.VARCHAR) Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter, @SqlType(StandardTypes.BIGINT) long index)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice splitPart(@SqlType("varchar(x)") Slice string, @SqlType(StandardTypes.VARCHAR) Slice delimiter, @SqlType(StandardTypes.BIGINT) long index)
     {
         checkCondition(index > 0, INVALID_FUNCTION_ARGUMENT, "Index must be greater than zero");
         // Empty delimiter? Then every character will be a split
@@ -363,42 +360,119 @@ public final class StringFunctions
 
     @Description("removes whitespace from the beginning of a string")
     @ScalarFunction("ltrim")
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice leftTrim(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice leftTrim(@SqlType("varchar(x)") Slice slice)
     {
         return SliceUtf8.leftTrim(slice);
     }
 
     @Description("removes whitespace from the end of a string")
     @ScalarFunction("rtrim")
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice rightTrim(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice rightTrim(@SqlType("varchar(x)") Slice slice)
     {
         return SliceUtf8.rightTrim(slice);
     }
 
     @Description("removes whitespace from the beginning and end of a string")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice trim(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice trim(@SqlType("varchar(x)") Slice slice)
     {
         return SliceUtf8.trim(slice);
     }
 
     @Description("converts the string to lower case")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice lower(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice lower(@SqlType("varchar(x)") Slice slice)
     {
         return toLowerCase(slice);
     }
 
     @Description("converts the string to upper case")
     @ScalarFunction
-    @SqlType(StandardTypes.VARCHAR)
-    public static Slice upper(@SqlType(StandardTypes.VARCHAR) Slice slice)
+    @LiteralParameters("x")
+    @SqlType("varchar(x)")
+    public static Slice upper(@SqlType("varchar(x)") Slice slice)
     {
         return toUpperCase(slice);
+    }
+
+    private static Slice pad(Slice text, long targetLength, Slice padString, int paddingOffset)
+    {
+        checkCondition(
+            0 <= targetLength && targetLength <= Integer.MAX_VALUE,
+            INVALID_FUNCTION_ARGUMENT,
+            "Target length must be in the range [0.." + Integer.MAX_VALUE + "]"
+        );
+        checkCondition(padString.length() > 0, INVALID_FUNCTION_ARGUMENT, "Padding string must not be empty");
+
+        int textLength = countCodePoints(text);
+        int resultLength = (int) targetLength;
+
+        // if our target length is the same as our string then return our string
+        if (textLength == resultLength) {
+            return text;
+        }
+
+        // if our string is bigger than requested then truncate
+        if (textLength > resultLength) {
+            return SliceUtf8.substring(text, 0, resultLength);
+        }
+
+        // number of bytes in each code point
+        int padStringLength = countCodePoints(padString);
+        int[] padStringCounts = new int[padStringLength];
+        for (int i = 0; i < padStringLength; ++i) {
+            padStringCounts[i] = lengthOfCodePointSafe(padString, offsetOfCodePoint(padString, i));
+        }
+
+        // preallocate the result
+        int bufferSize = text.length();
+        for (int i = 0; i < resultLength - textLength; ++i) {
+            bufferSize += padStringCounts[i % padStringLength];
+        }
+
+        Slice buffer = Slices.allocate(bufferSize);
+
+        // fill in the existing string
+        int countBytes = bufferSize - text.length();
+        int startPointOfExistingText = (paddingOffset + countBytes) % bufferSize;
+        buffer.setBytes(startPointOfExistingText, text);
+
+        // assign the pad string while there's enough space for it
+        int byteIndex = paddingOffset;
+        for (int i = 0; i < countBytes / padString.length(); ++i) {
+            buffer.setBytes(byteIndex, padString);
+            byteIndex += padString.length();
+        }
+
+        // handle the tail: at most we assign padStringLength - 1 code points
+        buffer.setBytes(byteIndex, padString.getBytes(0, paddingOffset + countBytes - byteIndex));
+        return buffer;
+    }
+
+    @Description("pads a string on the left")
+    @ScalarFunction("lpad")
+    @LiteralParameters({"x", "y"})
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice leftPad(@SqlType("varchar(x)") Slice text, @SqlType(StandardTypes.BIGINT) long targetLength, @SqlType("varchar(y)") Slice padString)
+    {
+        return pad(text, targetLength, padString, 0);
+    }
+
+    @Description("pads a string on the right")
+    @ScalarFunction("rpad")
+    @LiteralParameters({"x", "y"})
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice rightPad(@SqlType("varchar(x)") Slice text, @SqlType(StandardTypes.BIGINT) long targetLength, @SqlType("varchar(y)") Slice padString)
+    {
+        return pad(text, targetLength, padString, text.length());
     }
 
     @Description("transforms the string to normalized form")

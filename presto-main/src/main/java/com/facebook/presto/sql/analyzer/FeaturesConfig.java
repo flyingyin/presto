@@ -16,14 +16,39 @@ package com.facebook.presto.sql.analyzer;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.LegacyConfig;
 
+import javax.validation.constraints.NotNull;
+
 public class FeaturesConfig
 {
+    public static final String FILE_BASED_RESOURCE_GROUP_MANAGER = "file";
     private boolean experimentalSyntaxEnabled;
     private boolean distributedIndexJoinsEnabled;
-    private boolean distributedJoinsEnabled;
+    private boolean distributedJoinsEnabled = true;
+    private boolean redistributeWrites = true;
     private boolean optimizeMetadataQueries;
-    private boolean optimizeHashGeneration;
+    private boolean optimizeHashGeneration = true;
     private boolean optimizeSingleDistinct = true;
+    private boolean pushTableWriteThroughUnion = true;
+    private boolean intermediateAggregationsEnabled;
+
+    private boolean columnarProcessing;
+    private boolean columnarProcessingDictionary;
+    private boolean dictionaryAggregation;
+
+    private String resourceGroupManager = FILE_BASED_RESOURCE_GROUP_MANAGER;
+
+    @NotNull
+    public String getResourceGroupManager()
+    {
+        return resourceGroupManager;
+    }
+
+    @Config("resource-group-manager")
+    public FeaturesConfig setResourceGroupManager(String resourceGroupManager)
+    {
+        this.resourceGroupManager = resourceGroupManager;
+        return this;
+    }
 
     @LegacyConfig("analyzer.experimental-syntax-enabled")
     @Config("experimental-syntax-enabled")
@@ -54,6 +79,18 @@ public class FeaturesConfig
     public FeaturesConfig setDistributedJoinsEnabled(boolean distributedJoinsEnabled)
     {
         this.distributedJoinsEnabled = distributedJoinsEnabled;
+        return this;
+    }
+
+    public boolean isRedistributeWrites()
+    {
+        return redistributeWrites;
+    }
+
+    @Config("redistribute-writes")
+    public FeaturesConfig setRedistributeWrites(boolean redistributeWrites)
+    {
+        this.redistributeWrites = redistributeWrites;
         return this;
     }
 
@@ -95,6 +132,66 @@ public class FeaturesConfig
     public FeaturesConfig setOptimizeSingleDistinct(boolean optimizeSingleDistinct)
     {
         this.optimizeSingleDistinct = optimizeSingleDistinct;
+        return this;
+    }
+
+    public boolean isPushTableWriteThroughUnion()
+    {
+        return pushTableWriteThroughUnion;
+    }
+
+    @Config("optimizer.push-table-write-through-union")
+    public FeaturesConfig setPushTableWriteThroughUnion(boolean pushTableWriteThroughUnion)
+    {
+        this.pushTableWriteThroughUnion = pushTableWriteThroughUnion;
+        return this;
+    }
+
+    public boolean isIntermediateAggregationsEnabled()
+    {
+        return intermediateAggregationsEnabled;
+    }
+
+    @Config("optimizer.use-intermediate-aggregations")
+    public FeaturesConfig setIntermediateAggregationsEnabled(boolean intermediateAggregationsEnabled)
+    {
+        this.intermediateAggregationsEnabled = intermediateAggregationsEnabled;
+        return this;
+    }
+
+    public boolean isColumnarProcessing()
+    {
+        return columnarProcessing;
+    }
+
+    @Config("optimizer.columnar-processing")
+    public FeaturesConfig setColumnarProcessing(boolean columnarProcessing)
+    {
+        this.columnarProcessing = columnarProcessing;
+        return this;
+    }
+
+    public boolean isColumnarProcessingDictionary()
+    {
+        return columnarProcessingDictionary;
+    }
+
+    @Config("optimizer.columnar-processing-dictionary")
+    public FeaturesConfig setColumnarProcessingDictionary(boolean columnarProcessingDictionary)
+    {
+        this.columnarProcessingDictionary = columnarProcessingDictionary;
+        return this;
+    }
+
+    public boolean isDictionaryAggregation()
+    {
+        return dictionaryAggregation;
+    }
+
+    @Config("optimizer.dictionary-aggregation")
+    public FeaturesConfig setDictionaryAggregation(boolean dictionaryAggregation)
+    {
+        this.dictionaryAggregation = dictionaryAggregation;
         return this;
     }
 }

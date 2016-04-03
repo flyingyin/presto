@@ -20,14 +20,12 @@ import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.tpch.TpchMetadata;
 import com.facebook.presto.tpch.TpchTableHandle;
 import com.google.common.base.Joiner;
-import com.google.common.base.Predicate;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import org.intellij.lang.annotations.Language;
 import org.joda.time.DateTimeZone;
 import org.skife.jdbi.v2.DBI;
@@ -59,6 +57,7 @@ import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static com.facebook.presto.tpch.TpchRecordSet.createTpchRecordSet;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.util.DateTimeZoneIndex.getDateTimeZone;
+import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.tpch.TpchTable.LINE_ITEM;
@@ -88,7 +87,7 @@ public class H2QueryRunner
                 ")");
         handle.execute("CREATE INDEX custkey_index ON orders (custkey)");
         TpchTableHandle ordersHandle = tpchMetadata.getTableHandle(null, new SchemaTableName(TINY_SCHEMA_NAME, ORDERS.getTableName()));
-        insertRows(tpchMetadata.getTableMetadata(ordersHandle), handle, createTpchRecordSet(ORDERS, ordersHandle.getScaleFactor()));
+        insertRows(tpchMetadata.getTableMetadata(null, ordersHandle), handle, createTpchRecordSet(ORDERS, ordersHandle.getScaleFactor()));
 
         handle.execute("CREATE TABLE lineitem (\n" +
                 "  orderkey BIGINT,\n" +
@@ -110,7 +109,7 @@ public class H2QueryRunner
                 "  PRIMARY KEY (orderkey, linenumber)" +
                 ")");
         TpchTableHandle lineItemHandle = tpchMetadata.getTableHandle(null, new SchemaTableName(TINY_SCHEMA_NAME, LINE_ITEM.getTableName()));
-        insertRows(tpchMetadata.getTableMetadata(lineItemHandle), handle, createTpchRecordSet(LINE_ITEM, lineItemHandle.getScaleFactor()));
+        insertRows(tpchMetadata.getTableMetadata(null, lineItemHandle), handle, createTpchRecordSet(LINE_ITEM, lineItemHandle.getScaleFactor()));
     }
 
     public void close()
@@ -173,7 +172,7 @@ public class H2QueryRunner
                             row.add(doubleValue);
                         }
                     }
-                    else if (VARCHAR.equals(type)) {
+                    else if (type instanceof VarcharType) {
                         String stringValue = resultSet.getString(i);
                         if (resultSet.wasNull()) {
                             row.add(null);
@@ -225,14 +224,9 @@ public class H2QueryRunner
 
     private static void insertRows(ConnectorTableMetadata tableMetadata, Handle handle, RecordSet data)
     {
-        List<ColumnMetadata> columns = ImmutableList.copyOf(Iterables.filter(tableMetadata.getColumns(), new Predicate<ColumnMetadata>()
-        {
-            @Override
-            public boolean apply(ColumnMetadata columnMetadata)
-            {
-                return !columnMetadata.isHidden();
-            }
-        }));
+        List<ColumnMetadata> columns = tableMetadata.getColumns().stream()
+                .filter(columnMetadata -> !columnMetadata.isHidden())
+                .collect(toImmutableList());
 
         String vars = Joiner.on(',').join(nCopies(columns.size(), "?"));
         String sql = format("INSERT INTO %s VALUES (%s)", tableMetadata.getTable().getTableName(), vars);

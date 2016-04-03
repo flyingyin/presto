@@ -19,32 +19,32 @@ import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.block.BlockEncoding;
-import com.facebook.presto.spi.block.VariableWidthBlockBuilder;
-import com.facebook.presto.spi.block.VariableWidthBlockEncoding;
 import com.facebook.presto.spi.type.FixedWidthType;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeLiteralCalculation;
 import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalLong;
 
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static java.lang.String.format;
+import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
 
 public final class TypeUtils
 {
@@ -89,6 +89,9 @@ public final class TypeUtils
             else if (type.getJavaType() == Slice.class) {
                 return (long) methodHandle.invoke(type.getSlice(block, position));
             }
+            else if (!type.getJavaType().isPrimitive()) {
+                return (long) methodHandle.invoke(type.getObject(block, position));
+            }
             else {
                 throw new UnsupportedOperationException("Unsupported native container type: " + type.getJavaType() + " with type " + type.getTypeSignature());
             }
@@ -111,13 +114,17 @@ public final class TypeUtils
     public static List<Type> resolveTypes(List<TypeSignature> typeNames, TypeManager typeManager)
     {
         return typeNames.stream()
-                .map((TypeSignature type) -> checkNotNull(typeManager.getType(type), "Type '%s' not found", type))
+                .map((TypeSignature type) -> requireNonNull(typeManager.getType(type), format("Type '%s' not found", type)))
                 .collect(toImmutableList());
     }
 
     public static TypeSignature parameterizedTypeName(String base, TypeSignature... argumentNames)
     {
-        return new TypeSignature(base, ImmutableList.copyOf(argumentNames), ImmutableList.of());
+        ImmutableList.Builder<TypeSignatureParameter> parameters = ImmutableList.builder();
+        for (TypeSignature signature : argumentNames) {
+            parameters.add(TypeSignatureParameter.of(signature));
+        }
+        return new TypeSignature(base, parameters.build());
     }
 
     public static int getHashPosition(List<? extends Type> hashTypes, Block[] hashBlocks, int position)
@@ -163,118 +170,110 @@ public final class TypeUtils
         return new Page(blocks);
     }
 
-    public static Block createBlock(Type type, Object element)
-    {
-        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), 1, EXPECTED_ARRAY_SIZE);
-        appendToBlockBuilder(type, element, blockBuilder);
-        return blockBuilder.build();
-    }
-
-    public static void appendToBlockBuilder(Type type, Object element, BlockBuilder blockBuilder)
-    {
-        Class<?> javaType = type.getJavaType();
-        if (element == null) {
-            blockBuilder.appendNull();
-        }
-        // TODO: This should be removed. Functions that rely on this functionality should
-        // be doing the conversion themselves.
-        else if (type.getTypeSignature().getBase().equals(StandardTypes.ARRAY) && element instanceof Iterable<?>) {
-            BlockBuilder subBlockBuilder = new VariableWidthBlockBuilder(new BlockBuilderStatus(), EXPECTED_ARRAY_SIZE);
-            for (Object subElement : (Iterable<?>) element) {
-                appendToBlockBuilder(type.getTypeParameters().get(0), subElement, subBlockBuilder);
-            }
-            type.writeSlice(blockBuilder, buildStructuralSlice(subBlockBuilder));
-        }
-        else if (type.getTypeSignature().getBase().equals(StandardTypes.ROW) && element instanceof Iterable<?>) {
-            BlockBuilder subBlockBuilder = new VariableWidthBlockBuilder(new BlockBuilderStatus(), EXPECTED_ARRAY_SIZE);
-            int field = 0;
-            for (Object subElement : (Iterable<?>) element) {
-                appendToBlockBuilder(type.getTypeParameters().get(field), subElement, subBlockBuilder);
-                field++;
-            }
-            type.writeSlice(blockBuilder, buildStructuralSlice(subBlockBuilder));
-        }
-        else if (type.getTypeSignature().getBase().equals(StandardTypes.MAP) && element instanceof Map<?, ?>) {
-            BlockBuilder subBlockBuilder = new VariableWidthBlockBuilder(new BlockBuilderStatus(), EXPECTED_ARRAY_SIZE);
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>) element).entrySet()) {
-                appendToBlockBuilder(type.getTypeParameters().get(0), entry.getKey(), subBlockBuilder);
-                appendToBlockBuilder(type.getTypeParameters().get(1), entry.getValue(), subBlockBuilder);
-            }
-            type.writeSlice(blockBuilder, buildStructuralSlice(subBlockBuilder));
-        }
-
-        else if (javaType == boolean.class) {
-            type.writeBoolean(blockBuilder, (Boolean) element);
-        }
-        else if (javaType == long.class) {
-            type.writeLong(blockBuilder, ((Number) element).longValue());
-        }
-        else if (javaType == double.class) {
-            type.writeDouble(blockBuilder, ((Number) element).doubleValue());
-        }
-        else if (javaType == Slice.class) {
-            if (element instanceof String) {
-                type.writeSlice(blockBuilder, Slices.utf8Slice(element.toString()));
-            }
-            else if (element instanceof byte[]) {
-                type.writeSlice(blockBuilder, Slices.wrappedBuffer((byte[]) element));
-            }
-            else {
-                type.writeSlice(blockBuilder, (Slice) element);
-            }
-        }
-        else {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, String.format("Unexpected type %s", javaType.getName()));
-        }
-    }
-
-    public static Object castValue(Type type, Block block, int position)
-    {
-        Class<?> javaType = type.getJavaType();
-
-        if (block.isNull(position)) {
-            return null;
-        }
-        else if (javaType == boolean.class) {
-            return type.getBoolean(block, position);
-        }
-        else if (javaType == long.class) {
-            return type.getLong(block, position);
-        }
-        else if (javaType == double.class) {
-            return type.getDouble(block, position);
-        }
-        else if (type.getJavaType() == Slice.class) {
-            return type.getSlice(block, position);
-        }
-        else {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, String.format("Unexpected type %s", javaType.getName()));
-        }
-    }
-
-    public static Slice buildStructuralSlice(BlockBuilder builder)
-    {
-        return buildStructuralSlice(builder.build());
-    }
-
-    public static Slice buildStructuralSlice(Block block)
-    {
-        BlockEncoding encoding = block.getEncoding();
-        DynamicSliceOutput output = new DynamicSliceOutput(encoding.getEstimatedSize(block));
-        encoding.writeBlock(output, block);
-
-        return output.slice();
-    }
-
-    public static Block readStructuralBlock(Slice slice)
-    {
-        return new VariableWidthBlockEncoding().readBlock(slice.getInput());
-    }
-
     public static void checkElementNotNull(boolean isNull, String errorMsg)
     {
         if (isNull) {
             throw new PrestoException(NOT_SUPPORTED, errorMsg);
         }
+    }
+
+    public static TypeSignature resolveCalculatedType(
+            TypeSignature typeSignature,
+            Map<String, OptionalLong> inputs,
+            boolean allowExpressionsInSignature)
+    {
+        ImmutableList.Builder<TypeSignatureParameter> parametersBuilder = ImmutableList.builder();
+
+        boolean failedToCalculateLiteral = false;
+        for (TypeSignatureParameter parameter : typeSignature.getParameters()) {
+            switch (parameter.getKind()) {
+                case TYPE:
+                    parametersBuilder.add(TypeSignatureParameter.of(resolveCalculatedType(
+                            parameter.getTypeSignature(),
+                            inputs,
+                            allowExpressionsInSignature)));
+                    break;
+                case LITERAL_CALCULATION: {
+                    OptionalLong optionalLong = TypeCalculation.calculateLiteralValue(
+                            parameter.getLiteralCalculation().getCalculation(),
+                            inputs,
+                            allowExpressionsInSignature);
+                    if (optionalLong.isPresent()) {
+                        parametersBuilder.add(TypeSignatureParameter.of(optionalLong.getAsLong()));
+                    }
+                    else {
+                        failedToCalculateLiteral = true;
+                    }
+                    break;
+                }
+                default:
+                    parametersBuilder.add(parameter);
+                    break;
+            }
+        }
+
+        List<TypeSignatureParameter> calculatedParameters = parametersBuilder.build();
+        if (failedToCalculateLiteral && !calculatedParameters.isEmpty()) {
+            throw new IllegalArgumentException(
+                    format("Could not evaluate type expression %s with parameter bindings %s",
+                            typeSignature, inputs));
+        }
+        return new TypeSignature(typeSignature.getBase(), calculatedParameters);
+    }
+
+    public static Map<String, OptionalLong> computeParameterBindings(TypeSignature declaredType, TypeSignature actualType)
+    {
+        if (!declaredType.isCalculated()) {
+            return emptyMap();
+        }
+        Map<String, OptionalLong> inputs = new HashMap<>();
+
+        List<TypeSignatureParameter> declaredParameters = declaredType.getParameters();
+        List<TypeSignatureParameter> actualParameters = actualType.getParameters();
+
+        // in case of coercion to different base type we ignore arguments
+        if (!declaredType.getBase().equals(actualType.getBase())) {
+            checkArgument(actualParameters.isEmpty(), "Expected empty argument list for actual type with different base");
+            for (TypeSignatureParameter parameter : declaredParameters) {
+                if (parameter.isLiteralCalculation()) {
+                    inputs.put(parameter.getLiteralCalculation().getCalculation().toUpperCase(Locale.US), OptionalLong.empty());
+                }
+            }
+            return inputs;
+        }
+
+        if (declaredParameters.size() != actualParameters.size()) {
+            throw new IllegalArgumentException(format(
+                    "Number of parameters for declared type %s don't match actual type %s",
+                    declaredType,
+                    actualType));
+        }
+
+        for (int index = 0; index < declaredParameters.size(); index++) {
+            TypeSignatureParameter declaredParameter = declaredParameters.get(index);
+            TypeSignatureParameter actualParameter = actualParameters.get(index);
+
+            if (declaredParameter.isTypeSignature()) {
+                checkState(
+                        actualParameter.isTypeSignature(),
+                        "declared type %s doesn't match actual type %s",
+                        declaredType,
+                        actualType);
+
+                if (declaredParameter.isCalculated()) {
+                    inputs.putAll(computeParameterBindings(
+                            declaredParameter.getTypeSignature(),
+                            actualParameter.getTypeSignature()));
+                }
+            }
+            else if (declaredParameter.isLiteralCalculation()) {
+                TypeLiteralCalculation calculation = declaredParameter.getLiteralCalculation();
+                if (!actualParameter.isLongLiteral()) {
+                    throw new IllegalArgumentException(format("Expected type %s parameter %s to be a numeric literal", actualType, index));
+                }
+                inputs.put(calculation.getCalculation().toUpperCase(Locale.US), OptionalLong.of(actualParameter.getLongLiteral()));
+            }
+        }
+        return inputs;
     }
 }

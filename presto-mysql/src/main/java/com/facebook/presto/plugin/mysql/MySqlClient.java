@@ -21,10 +21,13 @@ import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
 import com.mysql.jdbc.Driver;
+import com.mysql.jdbc.Statement;
 
 import javax.inject.Inject;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Set;
@@ -71,11 +74,28 @@ public class MySqlClient
     }
 
     @Override
+    public PreparedStatement getPreparedStatement(Connection connection, String sql)
+            throws SQLException
+    {
+        PreparedStatement statement = connection.prepareStatement(sql);
+        if (statement.isWrapperFor(Statement.class)) {
+            statement.unwrap(Statement.class).enableStreamingResults();
+        }
+        return statement;
+    }
+
+    @Override
     protected ResultSet getTables(Connection connection, String schemaName, String tableName)
             throws SQLException
     {
         // MySQL maps their "database" to SQL catalogs and does not have schemas
-        return connection.getMetaData().getTables(schemaName, null, tableName, new String[] {"TABLE"});
+        DatabaseMetaData metadata = connection.getMetaData();
+        String escape = metadata.getSearchStringEscape();
+        return metadata.getTables(
+                schemaName,
+                null,
+                escapeNamePattern(tableName, escape),
+                new String[] {"TABLE", "VIEW"});
     }
 
     @Override
@@ -86,7 +106,6 @@ public class MySqlClient
         return new SchemaTableName(
                 resultSet.getString("TABLE_CAT").toLowerCase(ENGLISH),
                 resultSet.getString("TABLE_NAME").toLowerCase(ENGLISH));
-
     }
 
     @Override

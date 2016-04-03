@@ -32,9 +32,9 @@ String Functions
 
     Returns the Unicode code point ``n`` as a single character string.
 
-.. function:: concat(string1, string2) -> varchar
+.. function:: concat(string1, ..., stringN) -> varchar
 
-    Returns the concatenation of ``string1`` and ``string2``.
+    Returns the concatenation of ``string1``, ``string2``, ``...``, ``stringN``.
     This function provides the same functionality as the
     SQL-standard concatenation operator (``||``).
 
@@ -46,11 +46,12 @@ String Functions
 
     Converts ``string`` to lowercase.
 
-.. note::
+.. function:: lpad(string, size, padstring) -> varchar
 
-    This method does not perform perform locale-sensitive, context-sensitive,
-    or one-to-many mappings required for some languages.  Specifically, this
-    will return incorrect results for Lithuanian, Turkish and Azeri.
+    Left pads ``string`` to ``size`` characters with ``padstring``.
+    If ``size`` is less than the length of ``string``, the result is
+    truncated to ``size`` characters. ``size`` must not be negative
+    and ``padstring`` must be non-empty.
 
 .. function:: ltrim(string) -> varchar
 
@@ -67,6 +68,13 @@ String Functions
 .. function:: reverse(string) -> varchar
 
     Returns ``string`` with the characters in reverse order.
+
+.. function:: rpad(string, size, padstring) -> varchar
+
+    Right pads ``string`` to ``size`` characters with ``padstring``.
+    If ``size`` is less than the length of ``string``, the result is
+    truncated to ``size`` characters. ``size`` must not be negative
+    and ``padstring`` must be non-empty.
 
 .. function:: rtrim(string) -> varchar
 

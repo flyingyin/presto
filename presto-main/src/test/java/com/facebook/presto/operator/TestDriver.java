@@ -14,6 +14,7 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.ScheduledSplit;
+import com.facebook.presto.Session;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.spi.ColumnHandle;
@@ -26,6 +27,7 @@ import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.PageSourceProvider;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.testing.MaterializingOperator;
+import com.facebook.presto.testing.TestingTransactionHandle;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -86,7 +88,7 @@ public class TestDriver
     public void testNormalFinish()
     {
         List<Type> types = ImmutableList.<Type>of(VARCHAR, BIGINT, BIGINT);
-        ValuesOperator source = new ValuesOperator(driverContext.addOperatorContext(0, "values"), types, rowPagesBuilder(types)
+        ValuesOperator source = new ValuesOperator(driverContext.addOperatorContext(0, new PlanNodeId("test"), "values"), types, rowPagesBuilder(types)
                 .addSequencePage(10, 20, 30, 40)
                 .build());
 
@@ -108,7 +110,7 @@ public class TestDriver
     public void testAbruptFinish()
     {
         List<Type> types = ImmutableList.<Type>of(VARCHAR, BIGINT, BIGINT);
-        ValuesOperator source = new ValuesOperator(driverContext.addOperatorContext(0, "values"), types, rowPagesBuilder(types)
+        ValuesOperator source = new ValuesOperator(driverContext.addOperatorContext(0, new PlanNodeId("test"), "values"), types, rowPagesBuilder(types)
                 .addSequencePage(10, 20, 30, 40)
                 .build());
 
@@ -134,12 +136,12 @@ public class TestDriver
     {
         PlanNodeId sourceId = new PlanNodeId("source");
         final List<Type> types = ImmutableList.<Type>of(VARCHAR, BIGINT, BIGINT);
-        TableScanOperator source = new TableScanOperator(driverContext.addOperatorContext(99, "values"),
+        TableScanOperator source = new TableScanOperator(driverContext.addOperatorContext(99, new PlanNodeId("test"), "values"),
                 sourceId,
                 new PageSourceProvider()
                 {
                     @Override
-                    public ConnectorPageSource createPageSource(Split split, List<ColumnHandle> columns)
+                    public ConnectorPageSource createPageSource(Session session, Split split, List<ColumnHandle> columns)
                     {
                         return new FixedPageSource(rowPagesBuilder(types)
                                 .addSequencePage(10, 20, 30, 40)
@@ -172,7 +174,7 @@ public class TestDriver
     public void testBrokenOperatorCloseWhileProcessing()
             throws Exception
     {
-        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, "source"), false);
+        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, new PlanNodeId("test"), "source"), false);
         final Driver driver = new Driver(driverContext, brokenOperator, createSinkOperator(brokenOperator));
 
         assertSame(driver.getDriverContext(), driverContext);
@@ -205,7 +207,7 @@ public class TestDriver
     public void testBrokenOperatorProcessWhileClosing()
             throws Exception
     {
-        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, "source"), true);
+        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, new PlanNodeId("test"), "source"), true);
         final Driver driver = new Driver(driverContext, brokenOperator, createSinkOperator(brokenOperator));
 
         assertSame(driver.getDriverContext(), driverContext);
@@ -238,12 +240,12 @@ public class TestDriver
         PlanNodeId sourceId = new PlanNodeId("source");
         final List<Type> types = ImmutableList.<Type>of(VARCHAR, BIGINT, BIGINT);
         // create a table scan operator that does not block, which will cause the driver loop to busy wait
-        TableScanOperator source = new NotBlockedTableScanOperator(driverContext.addOperatorContext(99, "values"),
+        TableScanOperator source = new NotBlockedTableScanOperator(driverContext.addOperatorContext(99, new PlanNodeId("test"), "values"),
                 sourceId,
                 new PageSourceProvider()
                 {
                     @Override
-                    public ConnectorPageSource createPageSource(Split split, List<ColumnHandle> columns)
+                    public ConnectorPageSource createPageSource(Session session, Split split, List<ColumnHandle> columns)
                     {
                         return new FixedPageSource(rowPagesBuilder(types)
                                 .addSequencePage(10, 20, 30, 40)
@@ -253,7 +255,7 @@ public class TestDriver
                 types,
                 ImmutableList.<ColumnHandle>of());
 
-        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, "source"));
+        BrokenOperator brokenOperator = new BrokenOperator(driverContext.addOperatorContext(0, new PlanNodeId("test"), "source"));
         final Driver driver = new Driver(driverContext, source, brokenOperator);
 
         // block thread in operator processing
@@ -296,12 +298,12 @@ public class TestDriver
 
     private static Split newMockSplit()
     {
-        return new Split("test", new MockSplit());
+        return new Split("test", TestingTransactionHandle.create("test"), new MockSplit());
     }
 
     private MaterializingOperator createSinkOperator(Operator source)
     {
-        return new MaterializingOperator(driverContext.addOperatorContext(1, "sink"), source.getTypes());
+        return new MaterializingOperator(driverContext.addOperatorContext(1, new PlanNodeId("test"), "sink"), source.getTypes());
     }
 
     private static class BrokenOperator

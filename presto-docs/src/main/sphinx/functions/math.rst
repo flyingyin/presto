@@ -80,6 +80,10 @@ Mathematical Functions
 
 .. function:: pow(x, p) -> double
 
+    This is an alias for :func:`power`.
+
+.. function:: power(x, p) -> double
+
     Returns ``x`` raised to the power of ``p``.
 
 .. function:: radians(x) -> double
@@ -88,11 +92,15 @@ Mathematical Functions
 
 .. function:: rand() -> double
 
-    Alias for ``random()``.
+    This is an alias for :func:`random()`.
 
 .. function:: random() -> double
 
-    Returns a pseudo-random value in the range 0.0 <= x < 1.0
+    Returns a pseudo-random value in the range 0.0 <= x < 1.0.
+
+.. function:: random(n) -> [same as input]
+
+    Returns a pseudo-random number between 0 and n (exclusive).
 
 .. function:: round(x) -> [same as input]
 
@@ -109,6 +117,21 @@ Mathematical Functions
 .. function:: to_base(x, radix) -> varchar
 
     Returns the base-``radix`` representation of ``x``.
+
+.. function:: truncate(x) -> double
+
+    Returns ``x`` rounded to integer by dropping digits after decimal point.
+
+.. function:: width_bucket(x, bound1, bound2, n) -> bigint
+
+    Returns the bin number of ``x`` in an equi-width histogram with the
+    specified ``bound1`` and ``bound2`` bounds and ``n`` number of buckets.
+
+.. function:: width_bucket(x, bins) -> bigint
+
+    Returns the bin number of ``x`` according to the bins specified by the
+    array ``bins``. The ``bins`` parameter must be an array of doubles and is
+    assumed to be in sorted ascending order.
 
 Trigonometric Functions
 -----------------------

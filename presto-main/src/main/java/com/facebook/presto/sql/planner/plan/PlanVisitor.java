@@ -70,6 +70,11 @@ public class PlanVisitor<C, R>
         return visitPlan(node, context);
     }
 
+    public R visitExplainAnalyze(ExplainAnalyzeNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
     public R visitValues(ValuesNode node, C context)
     {
         return visitPlan(node, context);
@@ -115,7 +120,12 @@ public class PlanVisitor<C, R>
         return visitPlan(node, context);
     }
 
-    public R visitTableCommit(TableCommitNode node, C context)
+    public R visitMetadataDelete(MetadataDeleteNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitTableFinish(TableFinishNode node, C context)
     {
         return visitPlan(node, context);
     }
@@ -135,6 +145,11 @@ public class PlanVisitor<C, R>
         return visitPlan(node, context);
     }
 
+    public R visitGroupId(GroupIdNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
     public R visitRowNumber(RowNumberNode node, C context)
     {
         return visitPlan(node, context);
@@ -146,6 +161,11 @@ public class PlanVisitor<C, R>
     }
 
     public R visitExchange(ExchangeNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitEnforceSingleRow(EnforceSingleRowNode node, C context)
     {
         return visitPlan(node, context);
     }

@@ -14,14 +14,16 @@
 package com.facebook.presto.event.query;
 
 import com.facebook.presto.client.FailureInfo;
+import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryStats;
 import com.facebook.presto.execution.StageInfo;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskInfo;
-import com.facebook.presto.metadata.NodeVersion;
+import com.facebook.presto.execution.TaskState;
 import com.facebook.presto.operator.DriverStats;
 import com.facebook.presto.operator.TaskStats;
+import com.facebook.presto.transaction.TransactionId;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Throwables;
@@ -37,8 +39,9 @@ import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class QueryMonitor
@@ -53,10 +56,10 @@ public class QueryMonitor
     @Inject
     public QueryMonitor(ObjectMapper objectMapper, EventClient eventClient, NodeInfo nodeInfo, NodeVersion nodeVersion)
     {
-        this.objectMapper = checkNotNull(objectMapper, "objectMapper is null");
-        this.eventClient = checkNotNull(eventClient, "eventClient is null");
-        this.environment = checkNotNull(nodeInfo, "nodeInfo is null").getEnvironment();
-        this.serverVersion = checkNotNull(nodeVersion, "nodeVersion is null").toString();
+        this.objectMapper = requireNonNull(objectMapper, "objectMapper is null");
+        this.eventClient = requireNonNull(eventClient, "eventClient is null");
+        this.environment = requireNonNull(nodeInfo, "nodeInfo is null").getEnvironment();
+        this.serverVersion = requireNonNull(nodeVersion, "nodeVersion is null").toString();
     }
 
     public void createdEvent(QueryInfo queryInfo)
@@ -64,14 +67,16 @@ public class QueryMonitor
         eventClient.post(
                 new QueryCreatedEvent(
                         queryInfo.getQueryId(),
+                        queryInfo.getSession().getTransactionId().map(TransactionId::toString).orElse(null),
                         queryInfo.getSession().getUser(),
-                        queryInfo.getSession().getSource(),
+                        queryInfo.getSession().getPrincipal().orElse(null),
+                        queryInfo.getSession().getSource().orElse(null),
                         serverVersion,
                         environment,
-                        queryInfo.getSession().getCatalog(),
-                        queryInfo.getSession().getSchema(),
-                        queryInfo.getSession().getRemoteUserAddress(),
-                        queryInfo.getSession().getUserAgent(),
+                        queryInfo.getSession().getCatalog().orElse(null),
+                        queryInfo.getSession().getSchema().orElse(null),
+                        queryInfo.getSession().getRemoteUserAddress().orElse(null),
+                        queryInfo.getSession().getUserAgent().orElse(null),
                         queryInfo.getSelf(),
                         queryInfo.getQuery(),
                         queryInfo.getQueryStats().getCreateTime()
@@ -96,21 +101,28 @@ public class QueryMonitor
                 }
             }
 
+            Optional<TaskInfo> task = findFailedTask(queryInfo.getOutputStage());
+            String failureHost = task.map(x -> x.getSelf().getHost()).orElse(null);
+            String failureTask = task.map(x -> x.getTaskId().toString()).orElse(null);
+
             eventClient.post(
                     new QueryCompletionEvent(
                             queryInfo.getQueryId(),
+                            queryInfo.getSession().getTransactionId().map(TransactionId::toString).orElse(null),
                             queryInfo.getSession().getUser(),
-                            queryInfo.getSession().getSource(),
+                            queryInfo.getSession().getPrincipal().orElse(null),
+                            queryInfo.getSession().getSource().orElse(null),
                             serverVersion,
                             environment,
-                            queryInfo.getSession().getCatalog(),
-                            queryInfo.getSession().getSchema(),
-                            queryInfo.getSession().getRemoteUserAddress(),
-                            queryInfo.getSession().getUserAgent(),
+                            queryInfo.getSession().getCatalog().orElse(null),
+                            queryInfo.getSession().getSchema().orElse(null),
+                            queryInfo.getSession().getRemoteUserAddress().orElse(null),
+                            queryInfo.getSession().getUserAgent().orElse(null),
                             queryInfo.getState(),
                             queryInfo.getSelf(),
                             queryInfo.getFieldNames(),
                             queryInfo.getQuery(),
+                            queryStats.getPeakMemoryReservation().toBytes(),
                             queryStats.getCreateTime(),
                             queryStats.getExecutionStartTime(),
                             queryStats.getEndTime(),
@@ -125,6 +137,8 @@ public class QueryMonitor
                             queryInfo.getErrorCode(),
                             failureType,
                             failureMessage,
+                            failureTask,
+                            failureHost,
                             objectMapper.writeValueAsString(queryInfo.getOutputStage()),
                             objectMapper.writeValueAsString(queryInfo.getFailureInfo()),
                             objectMapper.writeValueAsString(queryInfo.getInputs()),
@@ -137,6 +151,23 @@ public class QueryMonitor
         catch (JsonProcessingException e) {
             throw Throwables.propagate(e);
         }
+    }
+
+    private static Optional<TaskInfo> findFailedTask(StageInfo stageInfo)
+    {
+        if (stageInfo == null) {
+            return Optional.empty();
+        }
+
+        for (StageInfo subStage : stageInfo.getSubStages()) {
+            Optional<TaskInfo> task = findFailedTask(subStage);
+            if (task.isPresent()) {
+                return task;
+            }
+        }
+        return stageInfo.getTasks().stream()
+                .filter(taskInfo -> taskInfo.getState() == TaskState.FAILED)
+                .findFirst();
     }
 
     private void logQueryTimeline(QueryInfo queryInfo)
@@ -196,8 +227,9 @@ public class QueryMonitor
 
             Duration finishing = millis(queryEndTime.getMillis() - lastTaskEndTime);
 
-            log.info("TIMELINE: Query %s :: elapsed %s :: planning %s :: scheduling %s :: running %s :: finishing %s :: begin %s :: end %s",
+            log.info("TIMELINE: Query %s :: Transaction:[%s] :: elapsed %s :: planning %s :: scheduling %s :: running %s :: finishing %s :: begin %s :: end %s",
                     queryInfo.getQueryId(),
+                     queryInfo.getSession().getTransactionId().map(TransactionId::toString).orElse(""),
                     elapsed,
                     planning,
                     scheduling,

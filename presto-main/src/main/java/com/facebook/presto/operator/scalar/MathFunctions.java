@@ -15,6 +15,8 @@ package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.operator.Description;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.type.DoubleType;
 import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.type.SqlType;
 import com.google.common.primitives.Doubles;
@@ -23,6 +25,7 @@ import io.airlift.slice.Slice;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static com.facebook.presto.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.Character.MAX_RADIX;
@@ -38,6 +41,7 @@ public final class MathFunctions
     @SqlType(StandardTypes.BIGINT)
     public static long abs(@SqlType(StandardTypes.BIGINT) long num)
     {
+        checkCondition(num != Long.MIN_VALUE, NUMERIC_VALUE_OUT_OF_RANGE, "Value -9223372036854775808 is out of range for abs()");
         return Math.abs(num);
     }
 
@@ -103,6 +107,14 @@ public final class MathFunctions
     public static double ceiling(@SqlType(StandardTypes.DOUBLE) double num)
     {
         return Math.ceil(num);
+    }
+
+    @Description("round to integer by dropping digits after decimal point")
+    @ScalarFunction
+    @SqlType(StandardTypes.DOUBLE)
+    public static double truncate(@SqlType(StandardTypes.DOUBLE) double num)
+    {
+        return Math.signum(num) * Math.floor(Math.abs(num));
     }
 
     @Description("cosine")
@@ -218,9 +230,9 @@ public final class MathFunctions
     }
 
     @Description("value raised to the power of exponent")
-    @ScalarFunction
+    @ScalarFunction(alias = "pow")
     @SqlType(StandardTypes.DOUBLE)
-    public static double pow(@SqlType(StandardTypes.DOUBLE) double num, @SqlType(StandardTypes.DOUBLE) double exponent)
+    public static double power(@SqlType(StandardTypes.DOUBLE) double num, @SqlType(StandardTypes.DOUBLE) double exponent)
     {
         return Math.pow(num, exponent);
     }
@@ -239,6 +251,15 @@ public final class MathFunctions
     public static double random()
     {
         return ThreadLocalRandom.current().nextDouble();
+    }
+
+    @Description("a pseudo-random number between 0 and value (exclusive)")
+    @ScalarFunction(alias = "rand", deterministic = false)
+    @SqlType(StandardTypes.BIGINT)
+    public static long random(@SqlType(StandardTypes.BIGINT) long value)
+    {
+        checkCondition(value > 0, INVALID_FUNCTION_ARGUMENT, "bound must be positive");
+        return ThreadLocalRandom.current().nextLong(value);
     }
 
     @Description("round to nearest integer")
@@ -380,5 +401,80 @@ public final class MathFunctions
     {
         checkCondition(radix >= MIN_RADIX && radix <= MAX_RADIX,
                 INVALID_FUNCTION_ARGUMENT, "Radix must be between %d and %d", MIN_RADIX, MAX_RADIX);
+    }
+
+    @Description("The bucket number of a value given a lower and upper bound and the number of buckets")
+    @ScalarFunction("width_bucket")
+    @SqlType(StandardTypes.BIGINT)
+    public static long widthBucket(@SqlType(StandardTypes.DOUBLE) double operand, @SqlType(StandardTypes.DOUBLE) double bound1, @SqlType(StandardTypes.DOUBLE) double bound2, @SqlType(StandardTypes.BIGINT) long bucketCount)
+    {
+        checkCondition(bucketCount > 0, INVALID_FUNCTION_ARGUMENT, "bucketCount must be greater than 0");
+        checkCondition(!isNaN(operand), INVALID_FUNCTION_ARGUMENT, "operand must not be NaN");
+        checkCondition(isFinite(bound1), INVALID_FUNCTION_ARGUMENT, "first bound must be finite");
+        checkCondition(isFinite(bound2), INVALID_FUNCTION_ARGUMENT, "second bound must be finite");
+        checkCondition(bound1 != bound2, INVALID_FUNCTION_ARGUMENT, "bounds cannot equal each other");
+
+        long result = 0;
+
+        double lower = Math.min(bound1, bound2);
+        double upper = Math.max(bound1, bound2);
+
+        if (operand < lower) {
+            result = 0;
+        }
+        else if (operand >= upper) {
+            try {
+                result = Math.addExact(bucketCount, 1);
+            }
+            catch (ArithmeticException e) {
+                throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, format("Bucket for value %s is out of range", operand));
+            }
+        }
+        else {
+            result = (long) ((double) bucketCount * (operand - lower) / (upper - lower) + 1);
+        }
+
+        if (bound1 > bound2) {
+            result = (bucketCount - result) + 1;
+        }
+
+        return result;
+    }
+
+    @Description("The bucket number of a value given an array of bins")
+    @ScalarFunction("width_bucket")
+    @SqlType(StandardTypes.BIGINT)
+    public static long widthBucket(@SqlType(StandardTypes.DOUBLE) double operand, @SqlType("array(double)") Block bins)
+    {
+        int numberOfBins = bins.getPositionCount();
+
+        checkCondition(numberOfBins > 0, INVALID_FUNCTION_ARGUMENT, "Bins cannot be an empty array");
+        checkCondition(!isNaN(operand), INVALID_FUNCTION_ARGUMENT, "Operand cannot be NaN");
+
+        int lower = 0;
+        int upper = numberOfBins;
+
+        int index;
+        double bin;
+
+        while (lower < upper) {
+            if (DoubleType.DOUBLE.getDouble(bins, lower) > DoubleType.DOUBLE.getDouble(bins, upper - 1)) {
+                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Bin values are not sorted in ascending order");
+            }
+
+            index = (lower + upper) / 2;
+            bin = DoubleType.DOUBLE.getDouble(bins, index);
+
+            checkCondition(isFinite(bin), INVALID_FUNCTION_ARGUMENT, format("Bin value must be finite, got %s", bin));
+
+            if (operand < bin) {
+                upper = index;
+            }
+            else {
+                lower = index + 1;
+            }
+        }
+
+        return lower;
     }
 }

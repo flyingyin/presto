@@ -39,6 +39,13 @@ public class TestVarbinaryFunctions
     }
 
     @Test
+    public void testBinaryLiteral()
+            throws Exception
+    {
+        assertFunction("X'58F7'", VARBINARY, new SqlVarbinary(new byte[]{(byte) 0x58, (byte) 0xF7}));
+    }
+
+    @Test
     public void testLength()
             throws Exception
     {
@@ -130,6 +137,30 @@ public class TestVarbinaryFunctions
     {
         assertFunction("md5(CAST('' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("D41D8CD98F00B204E9800998ECF8427E"));
         assertFunction("md5(CAST('hashme' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("533F6357E0210E67D91F651BC49E1278"));
+    }
+
+    @Test
+    public void testSha1()
+            throws Exception
+    {
+        assertFunction("sha1(CAST('' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"));
+        assertFunction("sha1(CAST('hashme' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("FB78992E561929A6967D5328F49413FA99048D06"));
+    }
+
+    @Test
+    public void testSha256()
+            throws Exception
+    {
+        assertFunction("sha256(CAST('' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"));
+        assertFunction("sha256(CAST('hashme' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("02208B9403A87DF9F4ED6B2EE2657EFAA589026B4CCE9ACCC8E8A5BF3D693C86"));
+    }
+
+    @Test
+    public void testSha512()
+            throws Exception
+    {
+        assertFunction("sha512(CAST('' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("CF83E1357EEFB8BDF1542850D66D8007D620E4050B5715DC83F4A921D36CE9CE47D0D13C5D85F2B0FF8318D2877EEC2F63B931BD47417A81A538327AF927DA3E"));
+        assertFunction("sha512(CAST('hashme' AS VARBINARY))", VARBINARY, sqlVarbinaryHex("8A4B59FB9188D09B989FF596AC9CEFBF2ED91DED8DCD9498E8BF2236814A92B23BE6867E7FC340880E514F8FDF97E1F147EA4B0FD6C2DA3557D0CF1C0B58A204"));
     }
 
     private static String encodeBase64(byte[] value)

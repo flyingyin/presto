@@ -24,11 +24,10 @@ import javax.annotation.concurrent.Immutable;
 
 import java.net.URI;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
-import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
 
 @Immutable
 public class TaskInfo
@@ -51,7 +50,7 @@ public class TaskInfo
     public static final long MAX_VERSION = Long.MAX_VALUE;
 
     private final TaskId taskId;
-    private final Optional<String> nodeInstanceId;
+    private final String taskInstanceId;
     private final long version;
     private final TaskState state;
     private final URI self;
@@ -60,10 +59,11 @@ public class TaskInfo
     private final Set<PlanNodeId> noMoreSplits;
     private final TaskStats stats;
     private final List<ExecutionFailureInfo> failures;
+    private final boolean needsPlan;
 
     @JsonCreator
     public TaskInfo(@JsonProperty("taskId") TaskId taskId,
-            @JsonProperty("nodeInstanceId") Optional<String> nodeInstanceId,
+            @JsonProperty("taskInstanceId") String taskInstanceId,
             @JsonProperty("version") long version,
             @JsonProperty("state") TaskState state,
             @JsonProperty("self") URI self,
@@ -71,17 +71,19 @@ public class TaskInfo
             @JsonProperty("outputBuffers") SharedBufferInfo outputBuffers,
             @JsonProperty("noMoreSplits") Set<PlanNodeId> noMoreSplits,
             @JsonProperty("stats") TaskStats stats,
-            @JsonProperty("failures") List<ExecutionFailureInfo> failures)
+            @JsonProperty("failures") List<ExecutionFailureInfo> failures,
+            @JsonProperty("needsPlan") boolean needsPlan)
     {
-        this.taskId = checkNotNull(taskId, "taskId is null");
-        this.nodeInstanceId = checkNotNull(nodeInstanceId, "nodeInstanceId is null");
+        this.taskId = requireNonNull(taskId, "taskId is null");
+        this.taskInstanceId = requireNonNull(taskInstanceId, "taskInstanceId is null");
+
         this.version = version;
-        this.state = checkNotNull(state, "state is null");
-        this.self = checkNotNull(self, "self is null");
-        this.lastHeartbeat = checkNotNull(lastHeartbeat, "lastHeartbeat is null");
-        this.outputBuffers = checkNotNull(outputBuffers, "outputBuffers is null");
-        this.noMoreSplits = checkNotNull(noMoreSplits, "noMoreSplits is null");
-        this.stats = checkNotNull(stats, "stats is null");
+        this.state = requireNonNull(state, "state is null");
+        this.self = requireNonNull(self, "self is null");
+        this.lastHeartbeat = requireNonNull(lastHeartbeat, "lastHeartbeat is null");
+        this.outputBuffers = requireNonNull(outputBuffers, "outputBuffers is null");
+        this.noMoreSplits = requireNonNull(noMoreSplits, "noMoreSplits is null");
+        this.stats = requireNonNull(stats, "stats is null");
 
         if (failures != null) {
             this.failures = ImmutableList.copyOf(failures);
@@ -89,6 +91,7 @@ public class TaskInfo
         else {
             this.failures = ImmutableList.of();
         }
+        this.needsPlan = needsPlan;
     }
 
     @JsonProperty
@@ -98,9 +101,9 @@ public class TaskInfo
     }
 
     @JsonProperty
-    public Optional<String> getNodeInstanceId()
+    public String getTaskInstanceId()
     {
-        return nodeInstanceId;
+        return taskInstanceId;
     }
 
     @JsonProperty
@@ -151,9 +154,15 @@ public class TaskInfo
         return failures;
     }
 
+    @JsonProperty
+    public boolean isNeedsPlan()
+    {
+        return needsPlan;
+    }
+
     public TaskInfo summarize()
     {
-        return new TaskInfo(taskId, nodeInstanceId, version, state, self, lastHeartbeat, outputBuffers, noMoreSplits, stats.summarize(), failures);
+        return new TaskInfo(taskId, taskInstanceId, version, state, self, lastHeartbeat, outputBuffers, noMoreSplits, stats.summarize(), failures, needsPlan);
     }
 
     @Override
