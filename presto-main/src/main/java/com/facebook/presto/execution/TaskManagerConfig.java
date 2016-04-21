@@ -43,6 +43,7 @@ public class TaskManagerConfig
     private Duration splitConcurrencyAdjustmentInterval = new Duration(100, TimeUnit.MILLISECONDS);
 
     private DataSize sinkMaxBufferSize = new DataSize(32, Unit.MEGABYTE);
+    private DataSize maxPagePartitioningBufferSize = new DataSize(32, Unit.MEGABYTE);
 
     private Duration clientTimeout = new Duration(2, TimeUnit.MINUTES);
     private Duration infoMaxAge = new Duration(15, TimeUnit.MINUTES);
@@ -52,6 +53,8 @@ public class TaskManagerConfig
     private Integer taskJoinConcurrency;
     private int httpResponseThreads = 100;
     private int httpTimeoutThreads = 3;
+
+    private int taskNotificationThreads = 5;
 
     @MinDuration("1ms")
     @MaxDuration("10s")
@@ -216,6 +219,19 @@ public class TaskManagerConfig
         return this;
     }
 
+    @NotNull
+    public DataSize getMaxPagePartitioningBufferSize()
+    {
+        return maxPagePartitioningBufferSize;
+    }
+
+    @Config("driver.max-page-partitioning-buffer-size")
+    public TaskManagerConfig setMaxPagePartitioningBufferSize(DataSize size)
+    {
+        this.maxPagePartitioningBufferSize = size;
+        return this;
+    }
+
     @MinDuration("5s")
     @NotNull
     public Duration getClientTimeout()
@@ -311,6 +327,20 @@ public class TaskManagerConfig
     public TaskManagerConfig setHttpTimeoutThreads(int httpTimeoutThreads)
     {
         this.httpTimeoutThreads = httpTimeoutThreads;
+        return this;
+    }
+
+    @Min(1)
+    public int getTaskNotificationThreads()
+    {
+        return taskNotificationThreads;
+    }
+
+    @Config("task.task-notification-threads")
+    @ConfigDescription("Number of threads used for internal task event notifications")
+    public TaskManagerConfig setTaskNotificationThreads(int taskNotificationThreads)
+    {
+        this.taskNotificationThreads = taskNotificationThreads;
         return this;
     }
 }

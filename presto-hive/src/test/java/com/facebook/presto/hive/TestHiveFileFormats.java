@@ -64,7 +64,7 @@ import java.util.TimeZone;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
 import static com.facebook.presto.hive.HiveTestUtils.TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.getTypes;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.tests.StructuralTestUtil.arrayBlockOf;
 import static com.facebook.presto.tests.StructuralTestUtil.rowBlockOf;
@@ -346,7 +346,7 @@ public class TestHiveFileFormats
     {
         RowType nameType = new RowType(ImmutableList.of(VARCHAR, VARCHAR), Optional.empty());
         RowType phoneType = new RowType(ImmutableList.of(VARCHAR, VARCHAR), Optional.empty());
-        RowType personType = new RowType(ImmutableList.of(nameType, BIGINT, VARCHAR, new ArrayType(phoneType)), Optional.empty());
+        RowType personType = new RowType(ImmutableList.of(nameType, INTEGER, VARCHAR, new ArrayType(phoneType)), Optional.empty());
 
         List<TestColumn> testColumns = ImmutableList.<TestColumn>of(
             new TestColumn(
@@ -372,7 +372,7 @@ public class TestHiveFileFormats
                 ),
                 null,
                 arrayBlockOf(personType,
-                        rowBlockOf(ImmutableList.of(nameType, BIGINT, VARCHAR, new ArrayType(phoneType)),
+                        rowBlockOf(ImmutableList.of(nameType, INTEGER, VARCHAR, new ArrayType(phoneType)),
                                 rowBlockOf(ImmutableList.of(VARCHAR, VARCHAR), "Bob", "Roberts"),
                                 0,
                                 "bob.roberts@example.com",
@@ -397,7 +397,7 @@ public class TestHiveFileFormats
     {
         List<TestColumn> testColumns = ImmutableList.copyOf(filter(TEST_COLUMNS, testColumn -> {
             ObjectInspector objectInspector = testColumn.getObjectInspector();
-            return !hasType(objectInspector, PrimitiveCategory.DATE);
+            return !hasType(objectInspector, PrimitiveCategory.DATE) && !hasType(objectInspector, PrimitiveCategory.DECIMAL);
         }));
 
         HiveOutputFormat<?, ?> outputFormat = new com.facebook.hive.orc.OrcOutputFormat();

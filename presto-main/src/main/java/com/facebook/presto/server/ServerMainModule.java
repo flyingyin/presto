@@ -25,6 +25,7 @@ import com.facebook.presto.connector.system.SystemConnectorModule;
 import com.facebook.presto.event.query.QueryCompletionEvent;
 import com.facebook.presto.event.query.QueryCreatedEvent;
 import com.facebook.presto.event.query.QueryMonitor;
+import com.facebook.presto.event.query.QueryMonitorConfig;
 import com.facebook.presto.event.query.SplitCompletionEvent;
 import com.facebook.presto.execution.LocationFactory;
 import com.facebook.presto.execution.QueryInfo;
@@ -164,6 +165,7 @@ public class ServerMainModule
 
         // task execution
         jaxrsBinder(binder).bind(TaskResource.class);
+        newExporter(binder).export(TaskResource.class).withGeneratedName();
         binder.bind(TaskManager.class).to(SqlTaskManager.class).in(Scopes.SINGLETON);
 
         // workaround for CodeCache GC issue
@@ -197,7 +199,7 @@ public class ServerMainModule
         httpClientBinder(binder).bindHttpClient("exchange", ForExchange.class)
                 .withTracing()
                 .withConfigDefaults(config -> {
-                    config.setIdleTimeout(new Duration(2, SECONDS));
+                    config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                     config.setMaxConnectionsPerServer(250);
                 });
@@ -210,10 +212,14 @@ public class ServerMainModule
         binder.bind(LocationFactory.class).to(HttpLocationFactory.class).in(Scopes.SINGLETON);
         binder.bind(RemoteTaskFactory.class).to(HttpRemoteTaskFactory.class).in(Scopes.SINGLETON);
         newExporter(binder).export(RemoteTaskFactory.class).withGeneratedName();
+
+        binder.bind(RemoteTaskStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(RemoteTaskStats.class).withGeneratedName();
+
         httpClientBinder(binder).bindHttpClient("scheduler", ForScheduler.class)
                 .withTracing()
                 .withConfigDefaults(config -> {
-                    config.setIdleTimeout(new Duration(2, SECONDS));
+                    config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                     config.setMaxConnectionsPerServer(250);
                 });
@@ -223,7 +229,7 @@ public class ServerMainModule
         httpClientBinder(binder).bindHttpClient("memoryManager", ForMemoryManager.class)
                 .withTracing()
                 .withConfigDefaults(config -> {
-                    config.setIdleTimeout(new Duration(2, SECONDS));
+                    config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                 });
 
@@ -277,6 +283,7 @@ public class ServerMainModule
         jsonBinder(binder).addDeserializerBinding(FunctionCall.class).to(FunctionCallDeserializer.class);
 
         // query monitor
+        configBinder(binder).bindConfig(QueryMonitorConfig.class);
         binder.bind(QueryMonitor.class).in(Scopes.SINGLETON);
         eventBinder(binder).bindEventClient(QueryCreatedEvent.class);
         eventBinder(binder).bindEventClient(QueryCompletionEvent.class);
@@ -309,7 +316,7 @@ public class ServerMainModule
         httpClientBinder(binder).bindHttpClient("execute", ForExecute.class)
                 .withTracing()
                 .withConfigDefaults(config -> {
-                    config.setIdleTimeout(new Duration(2, SECONDS));
+                    config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                 });
 

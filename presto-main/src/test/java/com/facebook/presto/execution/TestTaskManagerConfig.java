@@ -46,11 +46,13 @@ public class TestTaskManagerConfig
                 .setOperatorPreAllocatedMemory(new DataSize(16, Unit.MEGABYTE))
                 .setMaxPartialAggregationMemoryUsage(new DataSize(16, Unit.MEGABYTE))
                 .setSinkMaxBufferSize(new DataSize(32, Unit.MEGABYTE))
+                .setMaxPagePartitioningBufferSize(new DataSize(32, Unit.MEGABYTE))
                 .setWriterCount(1)
                 .setTaskDefaultConcurrency(1)
                 .setTaskJoinConcurrency(1)
                 .setHttpResponseThreads(100)
-                .setHttpTimeoutThreads(3));
+                .setHttpTimeoutThreads(3)
+                .setTaskNotificationThreads(5));
     }
 
     @Test
@@ -71,11 +73,13 @@ public class TestTaskManagerConfig
                 .put("task.info.max-age", "22m")
                 .put("task.client.timeout", "10s")
                 .put("sink.max-buffer-size", "42MB")
+                .put("driver.max-page-partitioning-buffer-size", "40MB")
                 .put("task.writer-count", "3")
                 .put("task.default-concurrency", "7")
                 .put("task.join-concurrency", "8")
                 .put("task.http-response-threads", "4")
                 .put("task.http-timeout-threads", "10")
+                .put("task.task-notification-threads", "13")
                 .build();
 
         TaskManagerConfig expected = new TaskManagerConfig()
@@ -93,11 +97,13 @@ public class TestTaskManagerConfig
                 .setInfoMaxAge(new Duration(22, TimeUnit.MINUTES))
                 .setClientTimeout(new Duration(10, TimeUnit.SECONDS))
                 .setSinkMaxBufferSize(new DataSize(42, Unit.MEGABYTE))
+                .setMaxPagePartitioningBufferSize(new DataSize(40, Unit.MEGABYTE))
                 .setWriterCount(3)
                 .setTaskDefaultConcurrency(7)
                 .setTaskJoinConcurrency(8)
                 .setHttpResponseThreads(4)
-                .setHttpTimeoutThreads(10);
+                .setHttpTimeoutThreads(10)
+                .setTaskNotificationThreads(13);
 
         assertFullMapping(properties, expected);
     }

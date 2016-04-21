@@ -277,7 +277,7 @@ class QueryPlanner
             }
             else {
                 Expression expression = fieldOrExpression.getExpression();
-                symbol = symbolAllocator.newSymbol(expression, analysis.getType(expression));
+                symbol = symbolAllocator.newSymbol(expression, analysis.getTypeWithCoercions(expression));
             }
 
             projections.put(symbol, subPlan.rewrite(fieldOrExpression));
@@ -306,7 +306,7 @@ class QueryPlanner
                         rewritten,
                         coercion.getTypeSignature().toString(),
                         false,
-                        isTypeOnlyCoercion(type.getTypeSignature(), coercion.getTypeSignature()));
+                        isTypeOnlyCoercion(type, coercion));
             }
             projections.put(symbol, rewritten);
             translations.put(expression, symbol);
@@ -416,10 +416,11 @@ class QueryPlanner
             groupingSetsSymbolsBuilder.add(groupingColumns.build());
         }
 
+        List<List<Symbol>> groupingSetsSymbols = groupingSetsSymbolsBuilder.build();
         // 2.c. Add a groupIdNode and groupIdSymbol if there are multiple grouping sets
         if (groupingSets.size() > 1) {
             Symbol groupIdSymbol = symbolAllocator.newSymbol("groupId", BIGINT);
-            GroupIdNode groupId = new GroupIdNode(idAllocator.getNextId(), subPlan.getRoot(), subPlan.getRoot().getOutputSymbols(), groupingSetsSymbolsBuilder.build(), groupIdSymbol);
+            GroupIdNode groupId = new GroupIdNode(idAllocator.getNextId(), subPlan.getRoot(), subPlan.getRoot().getOutputSymbols(), groupingSetsSymbols, groupIdSymbol);
             subPlan = new PlanBuilder(subPlan.getTranslations(), groupId, subPlan.getSampleWeight());
             distinctGroupingSymbolsBuilder.add(groupIdSymbol);
         }
@@ -470,6 +471,7 @@ class QueryPlanner
                 aggregationAssignments.build(),
                 functions.build(),
                 masks,
+                groupingSetsSymbols,
                 AggregationNode.Step.SINGLE,
                 subPlan.getSampleWeight(),
                 confidence,
@@ -619,7 +621,7 @@ class QueryPlanner
 
         ImmutableMap.Builder<Symbol, Expression> newTranslations = ImmutableMap.builder();
         for (Expression expression : expressions) {
-            Symbol symbol = symbolAllocator.newSymbol(expression, analysis.getType(expression));
+            Symbol symbol = symbolAllocator.newSymbol(expression, analysis.getTypeWithCoercions(expression));
 
             projections.put(symbol, translations.rewrite(expression));
             newTranslations.put(symbol, expression);
@@ -765,6 +767,7 @@ class QueryPlanner
                     ImmutableMap.<Symbol, FunctionCall>of(),
                     ImmutableMap.<Symbol, Signature>of(),
                     ImmutableMap.<Symbol, Symbol>of(),
+                    ImmutableList.of(subPlan.getRoot().getOutputSymbols()),
                     AggregationNode.Step.SINGLE,
                     Optional.empty(),
                     1.0,
